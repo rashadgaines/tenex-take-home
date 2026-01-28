@@ -1,14 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { MainCanvas, ChatInput } from '@/components/layout';
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
-}
+import type { ChatMessage, ChatResponse } from '@/types/ai';
 
 const examplePrompts = [
   'Set up a 1:1 with Sarah next week',
@@ -18,13 +13,34 @@ const examplePrompts = [
 ];
 
 export default function PlanPage() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const processedPromptRef = useRef(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Handle pre-filled prompt from URL
+  useEffect(() => {
+    const prompt = searchParams.get('prompt');
+    if (prompt && !processedPromptRef.current) {
+      processedPromptRef.current = true;
+      // Clear the URL parameter
+      router.replace('/plan', { scroll: false });
+      // Send the prompt
+      handleSend(prompt);
+    }
+  }, [searchParams, router]);
+
+  // Scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const handleSend = async (message: string) => {
-    if (!message.trim()) return;
+    if (!message.trim() || isLoading) return;
 
-    const userMessage: Message = {
+    const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
       content: message,
@@ -34,18 +50,48 @@ export default function PlanPage() {
     setMessages((prev) => [...prev, userMessage]);
     setIsLoading(true);
 
-    // TODO: Connect to AI endpoint
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message,
+          context: {
+            currentView: 'plan',
+            conversationHistory: messages,
+          },
+        }),
+      });
 
-    const assistantMessage: Message = {
-      id: (Date.now() + 1).toString(),
-      role: 'assistant',
-      content: `I understand you want to "${message}". Let me check your calendar and find some options for you.\n\nHere's what I found...`,
-      timestamp: new Date(),
-    };
+      if (!response.ok) {
+        if (response.status === 401) {
+          router.push('/login');
+          return;
+        }
+        throw new Error('Failed to get response');
+      }
 
-    setMessages((prev) => [...prev, assistantMessage]);
-    setIsLoading(false);
+      const data: ChatResponse = await response.json();
+
+      // Add assistant message
+      setMessages((prev) => [...prev, {
+        ...data.message,
+        timestamp: new Date(data.message.timestamp),
+      }]);
+    } catch (error) {
+      console.error('Chat error:', error);
+      // Add error message
+      setMessages((prev) => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: 'Sorry, I encountered an error. Please try again.',
+        timestamp: new Date(),
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleExampleClick = (prompt: string) => {
@@ -114,6 +160,7 @@ export default function PlanPage() {
                   </div>
                 </div>
               )}
+              <div ref={messagesEndRef} />
             </div>
           )}
         </div>

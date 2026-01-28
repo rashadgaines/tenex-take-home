@@ -1,9 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { processChat, createMockSchedule } from '@/lib/ai/chat';
+import { auth } from '@/lib/auth';
+import { prisma } from '@/lib/db';
+import { processChat } from '@/lib/ai/chat';
+import { getTodaySchedule } from '@/lib/google/calendar';
 import { ChatRequest } from '@/types/ai';
-import { DEFAULT_USER_PREFERENCES } from '@/types/user';
+import type { UserPreferences } from '@/types/user';
+
+const DEFAULT_PREFERENCES: UserPreferences = {
+  workingHours: { start: '09:00', end: '17:00' },
+  protectedTimes: [],
+  defaultMeetingDuration: 30,
+  timezone: 'America/Los_Angeles',
+};
 
 export async function POST(request: NextRequest) {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   try {
     const body: ChatRequest = await request.json();
 
@@ -14,13 +30,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // TODO: Get actual schedule from Ash's calendar API
-    // For now, use mock data
-    const schedule = createMockSchedule();
+    // Get user preferences
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { preferences: true },
+    });
 
-    // TODO: Get user preferences from session/database
-    const preferences = DEFAULT_USER_PREFERENCES;
+    const preferences = (user?.preferences as unknown as UserPreferences) || DEFAULT_PREFERENCES;
 
+    // Fetch real calendar data
+    const schedule = await getTodaySchedule(session.user.id, preferences);
+
+    // Process the chat message with real data
     const response = await processChat(body, schedule, preferences);
 
     return NextResponse.json(response);

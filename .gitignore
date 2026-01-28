@@ -42,3 +42,8 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# internal/sensitive files
+*.md
+!README.md
+tmrws-context.md

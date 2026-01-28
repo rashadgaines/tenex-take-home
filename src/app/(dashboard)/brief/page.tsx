@@ -1,31 +1,193 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
 import { Card } from '@/components/ui';
 import { BriefHeader, ActionCard, TodaySchedule, InsightCard } from '@/components/brief';
-import {
-  mockBriefData,
-  getGreeting,
-} from '@/lib/mocks';
+import { getGreeting } from '@/lib/mocks';
+import type { BriefData } from '@/types/ai';
 
 export default function BriefPage() {
-  const briefData = mockBriefData;
-  const greeting = getGreeting();
+  const router = useRouter();
+  const [briefData, setBriefData] = useState<BriefData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleAction = (action: string, payload?: unknown) => {
-    console.log('Action triggered:', action, payload);
-    // TODO: Connect to actual action handlers
+  // Fetch brief data on mount
+  useEffect(() => {
+    async function fetchBrief() {
+      try {
+        setIsLoading(true);
+        const response = await fetch('/api/ai/brief');
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            router.push('/login');
+            return;
+          }
+          throw new Error('Failed to fetch brief');
+        }
+
+        const data = await response.json();
+
+        // Parse dates from JSON
+        data.date = new Date(data.date);
+        data.todaySchedule.date = new Date(data.todaySchedule.date);
+        data.todaySchedule.events = data.todaySchedule.events.map((event: { start: string; end: string }) => ({
+          ...event,
+          start: new Date(event.start),
+          end: new Date(event.end),
+        }));
+        data.todaySchedule.availableSlots = data.todaySchedule.availableSlots.map((slot: { start: string; end: string }) => ({
+          ...slot,
+          start: new Date(slot.start),
+          end: new Date(slot.end),
+        }));
+
+        setBriefData(data);
+      } catch (err) {
+        console.error('Failed to fetch brief:', err);
+        setError('Unable to load your brief. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchBrief();
+  }, [router]);
+
+  // Handle action button clicks
+  const handleAction = async (action: string, payload?: unknown) => {
+    const payloadData = payload as { suggestionId?: string; draftId?: string } | undefined;
+
+    switch (action) {
+      case 'suggest_times':
+        // Navigate to Plan page with pre-filled prompt
+        router.push('/plan?prompt=' + encodeURIComponent('Help me find times for a meeting'));
+        break;
+
+      case 'send_email':
+        if (payloadData?.suggestionId) {
+          try {
+            const response = await fetch(`/api/email/suggestions/${payloadData.suggestionId}/send`, {
+              method: 'POST',
+            });
+            if (response.ok) {
+              // Remove the action item from the list
+              setBriefData((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  actionItems: prev.actionItems.filter(
+                    (item) => !item.id.includes(payloadData.suggestionId!)
+                  ),
+                };
+              });
+            }
+          } catch (err) {
+            console.error('Failed to send email:', err);
+          }
+        }
+        break;
+
+      case 'dismiss':
+        if (payloadData?.suggestionId) {
+          try {
+            const response = await fetch(`/api/email/suggestions/${payloadData.suggestionId}/dismiss`, {
+              method: 'POST',
+            });
+            if (response.ok) {
+              // Remove the action item from the list
+              setBriefData((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  actionItems: prev.actionItems.filter(
+                    (item) => !item.id.includes(payloadData.suggestionId!)
+                  ),
+                };
+              });
+            }
+          } catch (err) {
+            console.error('Failed to dismiss suggestion:', err);
+          }
+        }
+        break;
+
+      case 'edit':
+        // Navigate to Plan page with edit context
+        router.push('/plan?prompt=' + encodeURIComponent('Help me edit this email draft'));
+        break;
+
+      case 'open_chat':
+        router.push('/plan');
+        break;
+
+      case 'decline':
+        router.push('/plan?prompt=' + encodeURIComponent('Help me politely decline this meeting request'));
+        break;
+
+      default:
+        console.log('Unhandled action:', action, payload);
+    }
   };
 
+  // Handle insight action clicks
   const handleInsightAction = (prompt: string) => {
-    console.log('Insight action with prompt:', prompt);
-    // TODO: Open chat with pre-filled prompt
+    router.push('/plan?prompt=' + encodeURIComponent(prompt));
   };
 
+  // Handle dismiss insight
   const handleDismissInsight = () => {
-    console.log('Insight dismissed');
-    // TODO: Dismiss insight
+    setBriefData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        insight: undefined,
+      };
+    });
   };
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <MainCanvas>
+        <div className="max-w-3xl mx-auto">
+          <div className="animate-pulse space-y-6">
+            <div className="h-24 bg-[var(--bg-tertiary)] rounded-xl" />
+            <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
+            <div className="h-32 bg-[var(--bg-tertiary)] rounded-xl" />
+          </div>
+        </div>
+      </MainCanvas>
+    );
+  }
+
+  // Error state
+  if (error || !briefData) {
+    return (
+      <MainCanvas>
+        <div className="max-w-3xl mx-auto">
+          <Card padding="lg">
+            <div className="text-center py-8">
+              <p className="text-[var(--text-secondary)] mb-4">
+                {error || 'Something went wrong'}
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-[var(--accent-primary)] text-[var(--bg-primary)] rounded-lg"
+              >
+                Try again
+              </button>
+            </div>
+          </Card>
+        </div>
+      </MainCanvas>
+    );
+  }
+
+  const greeting = getGreeting();
 
   return (
     <MainCanvas>
@@ -34,7 +196,7 @@ export default function BriefPage() {
           greeting={greeting}
           date={briefData.date}
           summary={briefData.summary}
-          userName="Rashad"
+          userName={briefData.greeting.split(' ').pop() || 'there'}
         />
 
         {/* Action Items Section */}

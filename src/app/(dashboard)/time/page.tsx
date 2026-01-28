@@ -1,8 +1,10 @@
 'use client';
 
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
 import { Card, Button } from '@/components/ui';
-import { mockTimeAnalytics } from '@/lib/mocks';
+import type { TimeAnalytics } from '@/types/ai';
 
 function ProgressBar({ value, color }: { value: number; color: string }) {
   return (
@@ -15,13 +17,104 @@ function ProgressBar({ value, color }: { value: number; color: string }) {
   );
 }
 
+const periodLabels: Record<string, string> = {
+  day: 'Today',
+  week: 'This Week',
+  month: 'This Month',
+};
+
 export default function TimePage() {
-  const analytics = mockTimeAnalytics;
+  const router = useRouter();
+  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('week');
+  const [analytics, setAnalytics] = useState<TimeAnalytics | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch analytics data
+  useEffect(() => {
+    async function fetchAnalytics() {
+      try {
+        setIsLoading(true);
+        setError(null);
+
+        const response = await fetch(`/api/ai/analytics?period=${period}`);
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            router.push('/login');
+            return;
+          }
+          throw new Error('Failed to fetch analytics');
+        }
+
+        const data = await response.json();
+        setAnalytics(data);
+      } catch (err) {
+        console.error('Failed to fetch analytics:', err);
+        setError('Unable to load analytics. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchAnalytics();
+  }, [period, router]);
+
+  const handlePeriodChange = (newPeriod: 'day' | 'week' | 'month') => {
+    setPeriod(newPeriod);
+  };
 
   const handleInsightAction = (prompt: string) => {
-    console.log('Opening chat with prompt:', prompt);
-    // TODO: Open chat with pre-filled prompt
+    router.push('/plan?prompt=' + encodeURIComponent(prompt));
   };
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <MainCanvas
+        title="Time Analytics"
+        subtitle="Understand how you're spending your time"
+      >
+        <div className="max-w-3xl mx-auto">
+          <div className="animate-pulse space-y-6">
+            <div className="flex gap-2 mb-6">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-10 w-20 bg-[var(--bg-tertiary)] rounded-lg" />
+              ))}
+            </div>
+            <div className="h-64 bg-[var(--bg-tertiary)] rounded-xl" />
+            <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
+          </div>
+        </div>
+      </MainCanvas>
+    );
+  }
+
+  // Error state
+  if (error || !analytics) {
+    return (
+      <MainCanvas
+        title="Time Analytics"
+        subtitle="Understand how you're spending your time"
+      >
+        <div className="max-w-3xl mx-auto">
+          <Card padding="lg">
+            <div className="text-center py-8">
+              <p className="text-[var(--text-secondary)] mb-4">
+                {error || 'Something went wrong'}
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-[var(--accent-primary)] text-[var(--bg-primary)] rounded-lg"
+              >
+                Try again
+              </button>
+            </div>
+          </Card>
+        </div>
+      </MainCanvas>
+    );
+  }
 
   return (
     <MainCanvas
@@ -31,23 +124,26 @@ export default function TimePage() {
       <div className="max-w-3xl mx-auto">
         {/* Period Selector */}
         <div className="flex gap-2 mb-6">
-          {['Day', 'Week', 'Month'].map((period) => (
+          {(['day', 'week', 'month'] as const).map((p) => (
             <button
-              key={period}
+              key={p}
+              onClick={() => handlePeriodChange(p)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                period.toLowerCase() === analytics.period
+                p === period
                   ? 'bg-[var(--accent-primary)] text-[var(--bg-primary)]'
                   : 'bg-[var(--bg-tertiary)] border border-[var(--border-light)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
-              {period}
+              {p.charAt(0).toUpperCase() + p.slice(1)}
             </button>
           ))}
         </div>
 
         {/* Time Breakdown */}
         <Card padding="lg" className="mb-6">
-          <h3 className="font-semibold text-[var(--text-primary)] mb-6">This Week</h3>
+          <h3 className="font-semibold text-[var(--text-primary)] mb-6">
+            {periodLabels[period]}
+          </h3>
 
           <div className="space-y-4">
             <div>
@@ -85,57 +181,69 @@ export default function TimePage() {
 
           <div className="mt-6 pt-6 border-t border-[var(--border-light)]">
             <p className="text-sm text-[var(--text-secondary)]">
-              <span className="font-medium text-[var(--text-primary)]">{analytics.totalMeetingHours} hours</span> in meetings this week
-              {' · '}
-              <span className="font-medium text-[var(--text-primary)]">{analytics.busiestDay}</span> is your busiest day
+              <span className="font-medium text-[var(--text-primary)]">{analytics.totalMeetingHours} hours</span> in meetings
+              {period !== 'day' && (
+                <>
+                  {' · '}
+                  <span className="font-medium text-[var(--text-primary)]">{analytics.busiestDay}</span> is your busiest day
+                </>
+              )}
+              {analytics.longestFocusBlock > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-medium text-[var(--text-primary)]">{analytics.longestFocusBlock} min</span> longest focus block
+                </>
+              )}
             </p>
           </div>
         </Card>
 
         {/* Insights */}
-        <Card padding="lg">
-          <h3 className="font-semibold text-[var(--text-primary)] mb-4">Insights</h3>
+        {analytics.insights.length > 0 && (
+          <Card padding="lg">
+            <h3 className="font-semibold text-[var(--text-primary)] mb-4">Insights</h3>
 
-          <div className="space-y-4">
-            {analytics.insights.map((insight) => (
-              <div
-                key={insight.id}
-                className={`p-4 rounded-lg ${
-                  insight.type === 'warning' ? 'bg-amber-900/20' : 'bg-[var(--bg-tertiary)]'
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div className={`mt-0.5 ${
-                    insight.type === 'warning' ? 'text-amber-600' : 'text-[var(--text-secondary)]'
-                  }`}>
-                    {insight.type === 'warning' ? (
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18" />
-                      </svg>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-[var(--text-primary)]">{insight.message}</p>
-                    {insight.actionable && insight.action && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="mt-2 -ml-2"
-                        onClick={() => handleInsightAction(insight.action!.prompt)}
-                      >
-                        {insight.action.label} →
-                      </Button>
-                    )}
+            <div className="space-y-4">
+              {analytics.insights.map((insight) => (
+                <div
+                  key={insight.id}
+                  className={`p-4 rounded-lg ${
+                    insight.type === 'warning' ? 'bg-amber-900/20' : 'bg-[var(--bg-tertiary)]'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 ${
+                      insight.type === 'warning' ? 'text-amber-600' : 'text-[var(--text-secondary)]'
+                    }`}>
+                      {insight.type === 'warning' ? (
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[var(--text-primary)]">{insight.message}</p>
+                      {insight.actionable && insight.action && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="mt-2 -ml-2"
+                          onClick={() => handleInsightAction(insight.action!.prompt)}
+                        >
+                          {insight.action.label} →
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </Card>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {/* Ask About Time */}
         <Card padding="lg" className="mt-6">
@@ -149,7 +257,7 @@ export default function TimePage() {
             {[
               'How can I get more focus time?',
               'Which meetings could be async?',
-              'Compare this month to last month',
+              'Compare this week to last week',
             ].map((question) => (
               <button
                 key={question}
