@@ -1,16 +1,23 @@
 import { AppShell } from '@/components/layout';
+import { auth } from '@/lib/auth';
+import { redirect } from 'next/navigation';
 
-// TODO: Replace with real user data from NextAuth session
-const mockUser = {
-  name: 'Rashad',
-  email: 'rashad@example.com',
-  image: null,
-};
-
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <AppShell user={mockUser}>{children}</AppShell>;
+  const session = await auth();
+
+  if (!session?.user) {
+    redirect('/login');
+  }
+
+  const user = {
+    name: session.user.name || 'User',
+    email: session.user.email || '',
+    image: session.user.image || null,
+  };
+
+  return <AppShell user={user}>{children}</AppShell>;
 }
