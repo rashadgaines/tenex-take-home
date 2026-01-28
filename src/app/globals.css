@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+:root {
+  /* Backgrounds - Dark */
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #111111;
+  --bg-tertiary: #1a1a1a;
+  --bg-elevated: #222222;
+
+  /* Text - Dark */
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1a1;
+  --text-tertiary: #666666;
+
+  /* Accent - Calm neutral */
+  --accent-primary: #e5e5e5;
+  --accent-hover: #d4d4d4;
+  --accent-light: rgba(255, 255, 255, 0.08);
+
+  /* Meeting categories - Dark adjusted */
+  --meeting-internal: rgba(59, 130, 246, 0.2);
+  --meeting-external: rgba(245, 158, 11, 0.2);
+  --meeting-focus: rgba(16, 185, 129, 0.2);
+  --meeting-personal: rgba(139, 92, 246, 0.2);
+
+  /* Meeting category borders */
+  --meeting-internal-border: #3B82F6;
+  --meeting-external-border: #F59E0B;
+  --meeting-focus-border: #10B981;
+  --meeting-personal-border: #8B5CF6;
+
+  /* Status */
+  --status-success: #22c55e;
+  --status-warning: #f59e0b;
+  --status-error: #ef4444;
+
+  /* Borders - Dark */
+  --border-light: #262626;
+  --border-medium: #333333;
+
+  /* Shadows - Dark */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* Focus styles */
+*:focus-visible {
+  outline: 1px solid var(--border-medium);
+  outline-offset: 2px;
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-light);
+  color: var(--text-primary);
+}
