@@ -82,7 +82,6 @@ function groupEventsByDay(
   const current = new Date(startDate);
 
   while (current < endDate) {
-    const dayStart = new Date(current);
     const dayEnd = new Date(current);
     dayEnd.setDate(dayEnd.getDate() + 1);
 

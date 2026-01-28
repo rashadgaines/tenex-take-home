@@ -47,7 +47,7 @@ export const InputGroup = forwardRef<HTMLDivElement, InputGroupProps>(
 InputGroup.displayName = 'InputGroup';
 
 // InputGroup Textarea
-interface InputGroupTextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {}
+type InputGroupTextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
 
 export const InputGroupTextarea = forwardRef<HTMLTextAreaElement, InputGroupTextareaProps>(
   ({ className = '', disabled: propDisabled, ...props }, ref) => {

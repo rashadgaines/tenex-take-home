@@ -160,7 +160,7 @@ export const DropdownMenuContent = forwardRef<HTMLDivElement, DropdownMenuConten
 DropdownMenuContent.displayName = 'DropdownMenuContent';
 
 // DropdownMenu Item
-interface DropdownMenuItemProps extends ButtonHTMLAttributes<HTMLButtonElement> {}
+type DropdownMenuItemProps = ButtonHTMLAttributes<HTMLButtonElement>;
 
 export const DropdownMenuItem = forwardRef<HTMLButtonElement, DropdownMenuItemProps>(
   ({ className = '', onClick, children, ...props }, ref) => {

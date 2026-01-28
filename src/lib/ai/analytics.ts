@@ -14,7 +14,6 @@ export function calculateTimeAnalytics(
     return createEmptyAnalytics(period);
   }
 
-  const allEvents = schedules.flatMap((s) => s.events);
   const sortedSchedules = [...schedules].sort(
     (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
   );
@@ -112,7 +111,7 @@ function findLongestFocusBlock(schedules: DaySchedule[]): number {
 function generateInsights(
   analytics: TimeAnalytics,
   schedules: DaySchedule[],
-  preferences: UserPreferences
+  _preferences: UserPreferences
 ): Insight[] {
   const insights: Insight[] = [];
   let insightId = 1;

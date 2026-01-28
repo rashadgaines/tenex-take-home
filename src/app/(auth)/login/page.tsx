@@ -1,11 +1,32 @@
 import { signIn } from '@/lib/auth';
+import { redirect } from 'next/navigation';
+import { auth } from '@/lib/auth';
 
-export default function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ callbackUrl?: string }>;
+}) {
+  // Check if already logged in
+  const session = await auth();
+  const params = await searchParams;
+
+  if (session) {
+    redirect(params.callbackUrl || '/brief');
+  }
+
+  const callbackUrl = params.callbackUrl || '/brief';
+
   return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="max-w-md w-full space-y-8 p-8">
         <div className="text-center">
-          <h1 className="text-3xl font-bold text-[var(--text-primary)]">Welcome</h1>
+          <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border-medium)] flex items-center justify-center">
+            <svg className="w-8 h-8 text-[var(--text-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <h1 className="text-3xl font-bold text-[var(--text-primary)]">Welcome to Tenex</h1>
           <p className="mt-2 text-[var(--text-secondary)]">
             Sign in to manage your calendar with AI assistance
           </p>
@@ -14,7 +35,7 @@ export default function LoginPage() {
         <form
           action={async () => {
             'use server';
-            await signIn('google', { redirectTo: '/brief' });
+            await signIn('google', { redirectTo: callbackUrl });
           }}
         >
           <button
@@ -42,6 +63,10 @@ export default function LoginPage() {
             Continue with Google
           </button>
         </form>
+
+        <p className="text-center text-xs text-[var(--text-tertiary)]">
+          By signing in, you grant access to your Google Calendar and Gmail for scheduling assistance.
+        </p>
       </div>
     </div>
   );
