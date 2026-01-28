@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { MainCanvas, ChatInput } from '@/components/layout';
 import type { ChatMessage, ChatResponse } from '@/types/ai';
@@ -12,7 +12,7 @@ const examplePrompts = [
   'Schedule a team lunch on Friday',
 ];
 
-export default function PlanPage() {
+function PlanPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -177,5 +177,28 @@ export default function PlanPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function LoadingFallback() {
+  return (
+    <MainCanvas>
+      <div className="max-w-3xl mx-auto pb-32">
+        <div className="text-center py-12">
+          <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-light)] flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin" />
+          </div>
+          <p className="text-[var(--text-secondary)]">Loading...</p>
+        </div>
+      </div>
+    </MainCanvas>
+  );
+}
+
+export default function PlanPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <PlanPageContent />
+    </Suspense>
   );
 }
