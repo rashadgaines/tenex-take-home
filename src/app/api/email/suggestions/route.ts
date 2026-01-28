@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import type { EmailSuggestion, EmailDraft } from '@/types/email';
+import type { DbEmailSuggestion } from '@/types/database';
 
 export async function GET() {
   const session = await auth();
@@ -22,7 +23,7 @@ export async function GET() {
     });
 
     // Transform to the EmailSuggestion type expected by frontend
-    const transformed: EmailSuggestion[] = suggestions.map((s) => ({
+    const transformed: EmailSuggestion[] = suggestions.map((s: DbEmailSuggestion) => ({
       id: s.id,
       inReplyTo: s.inReplyTo || undefined,
       recipient: s.recipient,
