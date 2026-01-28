@@ -65,7 +65,15 @@ export default async function LoginPage({
         </form>
 
         <p className="text-center text-xs text-[var(--text-tertiary)]">
-          By signing in, you grant access to your Google Calendar and Gmail for scheduling assistance.
+          By signing in, you agree to our{' '}
+          <a href="/terms" className="underline hover:text-[var(--text-secondary)] transition-colors">
+            Terms of Service
+          </a>{' '}
+          and{' '}
+          <a href="/privacy" className="underline hover:text-[var(--text-secondary)] transition-colors">
+            Privacy Policy
+          </a>
+          , and grant access to your Google Calendar and Gmail for scheduling assistance.
         </p>
       </div>
     </div>
