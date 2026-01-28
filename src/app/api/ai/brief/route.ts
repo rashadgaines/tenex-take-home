@@ -5,6 +5,7 @@ import { getTodaySchedule } from '@/lib/google/calendar';
 import { generateBrief } from '@/lib/ai/chat';
 import type { UserPreferences } from '@/types/user';
 import type { EmailSuggestion, EmailDraft } from '@/types/email';
+import type { EmailSuggestion as PrismaEmailSuggestion } from '@prisma/client';
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   workingHours: { start: '09:00', end: '17:00' },
@@ -49,7 +50,7 @@ export async function GET() {
     });
 
     // Transform email suggestions to the expected type
-    const emailSuggestions: EmailSuggestion[] = emailSuggestionsRaw.map((s) => ({
+    const emailSuggestions: EmailSuggestion[] = emailSuggestionsRaw.map((s: PrismaEmailSuggestion) => ({
       id: s.id,
       inReplyTo: s.inReplyTo || undefined,
       recipient: s.recipient,
