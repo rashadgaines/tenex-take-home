@@ -22,10 +22,21 @@ import {
 } from './prompts';
 import { calculateTimeAnalytics, calculateAvailableSlots, calculateDayStats } from './analytics';
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazy initialization of OpenAI client
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (!openaiClient) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY environment variable is required');
+    }
+    openaiClient = new OpenAI({
+      apiKey,
+    });
+  }
+  return openaiClient;
+}
 
 /**
  * Process a chat message and generate a response
@@ -76,7 +87,7 @@ ${viewContext}`,
   });
 
   // Call OpenAI API
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAIClient().chat.completions.create({
     model: 'gpt-4o',
     max_tokens: 1024,
     messages,
@@ -112,7 +123,7 @@ export async function generateBrief(
 ): Promise<BriefData> {
   const prompt = buildBriefPrompt({ userName, schedule, preferences });
 
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAIClient().chat.completions.create({
     model: 'gpt-4o',
     max_tokens: 512,
     messages: [
@@ -175,7 +186,7 @@ export async function generateEmailDraft(params: {
     tone: params.tone,
   });
 
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAIClient().chat.completions.create({
     model: 'gpt-4o',
     max_tokens: 512,
     messages: [
