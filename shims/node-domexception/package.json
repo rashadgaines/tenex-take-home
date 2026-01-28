@@ -1,0 +1,7 @@
+{
+  "name": "node-domexception",
+  "version": "1.0.0",
+  "description": "Shim that exports native DOMException",
+  "main": "index.js",
+  "types": "index.d.ts"
+}

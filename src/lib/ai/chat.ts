@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import {
   ChatMessage,
   ChatRequest,
@@ -22,9 +22,9 @@ import {
 } from './prompts';
 import { calculateTimeAnalytics, calculateAvailableSlots, calculateDayStats } from './analytics';
 
-// Initialize Anthropic client
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 /**
@@ -45,7 +45,19 @@ export async function processChat(
     : '';
 
   // Build conversation history for the API
-  const messages: Anthropic.MessageParam[] = [];
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    {
+      role: 'system',
+      content: `${SYSTEM_PROMPT}
+
+Current context:
+${scheduleContext}
+
+${protectedContext}
+
+${viewContext}`,
+    },
+  ];
 
   // Add conversation history if provided
   if (context?.conversationHistory) {
@@ -63,24 +75,15 @@ export async function processChat(
     content: message,
   });
 
-  // Call Claude API
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  // Call OpenAI API
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o',
     max_tokens: 1024,
-    system: `${SYSTEM_PROMPT}
-
-Current context:
-${scheduleContext}
-
-${protectedContext}
-
-${viewContext}`,
     messages,
   });
 
   // Extract the text response
-  const textContent = response.content.find((c) => c.type === 'text');
-  const responseText = textContent?.type === 'text' ? textContent.text : 'I apologize, but I was unable to generate a response.';
+  const responseText = response.choices[0]?.message?.content || 'I apologize, but I was unable to generate a response.';
 
   // Generate suggested actions based on the response content
   const suggestedActions = detectSuggestedActions(responseText, message);
@@ -109,15 +112,16 @@ export async function generateBrief(
 ): Promise<BriefData> {
   const prompt = buildBriefPrompt({ userName, schedule, preferences });
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o',
     max_tokens: 512,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ],
   });
 
-  const textContent = response.content.find((c) => c.type === 'text');
-  const briefText = textContent?.type === 'text' ? textContent.text : '';
+  const briefText = response.choices[0]?.message?.content || '';
 
   // Parse the brief response
   const lines = briefText.split('\n').filter((l) => l.trim());
@@ -171,15 +175,16 @@ export async function generateEmailDraft(params: {
     tone: params.tone,
   });
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o',
     max_tokens: 512,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ],
   });
 
-  const textContent = response.content.find((c) => c.type === 'text');
-  return textContent?.type === 'text' ? textContent.text : '';
+  return response.choices[0]?.message?.content || '';
 }
 
 /**

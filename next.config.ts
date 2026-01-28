@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   // Enable React strict mode for better development experience
@@ -24,6 +25,21 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: {
       bodySizeLimit: '2mb',
+    },
+  },
+
+  // Webpack configuration for aliasing node-domexception
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      config.resolve.alias['node-domexception'] = path.resolve(__dirname, 'shims/node-domexception/index.js');
+    }
+    return config;
+  },
+
+  // Turbopack configuration for aliasing
+  turbopack: {
+    resolveAlias: {
+      'node-domexception': './shims/node-domexception/index.js',
     },
   },
 };
