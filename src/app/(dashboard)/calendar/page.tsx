@@ -43,6 +43,7 @@ export default function CalendarPage() {
   const [weekSchedule, setWeekSchedule] = useState<DaySchedule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
 
   const weekDays = getWeekDays(currentDate);
 
@@ -289,6 +290,7 @@ export default function CalendarPage() {
                       className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer hover:shadow-md transition-shadow ${colors.bg} ${colors.border}`}
                       style={{ top: `${top}px`, height: `${height}px` }}
                       title={`${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`}
+                      onClick={() => setSelectedEvent(event)}
                     >
                       <p className={`text-xs font-medium truncate ${colors.text}`}>
                         {event.title}
@@ -316,6 +318,123 @@ export default function CalendarPage() {
           </div>
         ))}
       </div>
+
+      {/* Event Details Card */}
+      {selectedEvent && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedEvent(null)}>
+          <Card className="max-w-md w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className={`w-3 h-3 rounded ${categoryColors[selectedEvent.category].bg} border-l-2 ${categoryColors[selectedEvent.category].border}`} />
+                <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+                  {selectedEvent.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setSelectedEvent(null)}
+                className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Time */}
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <p className="text-sm text-[var(--text-primary)]">
+                    {selectedEvent.start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+                  </p>
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    {formatTime(selectedEvent.start)} - {formatTime(selectedEvent.end)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Location */}
+              {selectedEvent.location && (
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <p className="text-sm text-[var(--text-primary)]">{selectedEvent.location}</p>
+                </div>
+              )}
+
+              {/* Meeting Link */}
+              {selectedEvent.meetingLink && (
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                  <a
+                    href={selectedEvent.meetingLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-[var(--accent-primary)] hover:underline"
+                  >
+                    Join Meeting
+                  </a>
+                </div>
+              )}
+
+              {/* Description */}
+              {selectedEvent.description && (
+                <div className="pt-2 border-t border-[var(--border-light)]">
+                  <h4 className="text-sm font-medium text-[var(--text-primary)] mb-2">Description</h4>
+                  <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap">
+                    {selectedEvent.description}
+                  </p>
+                </div>
+              )}
+
+              {/* Attendees */}
+              {selectedEvent.attendees.length > 0 && (
+                <div className="pt-2 border-t border-[var(--border-light)]">
+                  <h4 className="text-sm font-medium text-[var(--text-primary)] mb-2">
+                    Attendees ({selectedEvent.attendees.length})
+                  </h4>
+                  <div className="space-y-1">
+                    {selectedEvent.attendees.map((attendee, index) => (
+                      <div key={index} className="flex items-center justify-between">
+                        <span className="text-sm text-[var(--text-primary)]">
+                          {attendee.name || attendee.email}
+                        </span>
+                        <span className={`text-xs px-2 py-1 rounded-full capitalize ${
+                          attendee.responseStatus === 'accepted' ? 'bg-green-100 text-green-700' :
+                          attendee.responseStatus === 'declined' ? 'bg-red-100 text-red-700' :
+                          attendee.responseStatus === 'tentative' ? 'bg-yellow-100 text-yellow-700' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {attendee.responseStatus}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Agenda indicator */}
+              {selectedEvent.hasAgenda && (
+                <div className="pt-2 border-t border-[var(--border-light)]">
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                    <span className="text-sm text-[var(--text-secondary)]">Has agenda</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
     </MainCanvas>
   );
 }
