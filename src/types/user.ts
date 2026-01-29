@@ -26,6 +26,8 @@ export interface ProtectedTime {
   end: string;            // "09:00"
 }
 
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
+
 // Default preferences for new users
 export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   workingHours: {
@@ -34,5 +36,5 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   },
   protectedTimes: [],
   defaultMeetingDuration: 30,
-  timezone: 'America/New_York',
+  timezone: DEFAULT_TIMEZONE,
 };

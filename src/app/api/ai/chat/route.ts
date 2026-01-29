@@ -1,33 +1,40 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { processChat } from '@/lib/ai/chat';
+import { processChat } from '@/lib/ai/chat/index';
 import { getTodaySchedule } from '@/lib/google/calendar';
 import { ChatRequest } from '@/types/ai';
 import type { UserPreferences } from '@/types/user';
+import {
+  successResponse,
+  unauthorizedResponse,
+  validationErrorResponse,
+  rateLimitedResponse,
+  externalServiceErrorResponse,
+  internalErrorResponse,
+  ErrorCodes,
+} from '@/lib/api/responses';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   workingHours: { start: '09:00', end: '17:00' },
   protectedTimes: [],
   defaultMeetingDuration: 30,
-  timezone: 'America/Los_Angeles',
+  timezone: DEFAULT_TIMEZONE,
 };
 
 export async function POST(request: NextRequest) {
   const session = await auth();
 
   if (!session?.user?.id) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return unauthorizedResponse();
   }
 
   try {
     const body: ChatRequest = await request.json();
 
     if (!body.message || typeof body.message !== 'string') {
-      return NextResponse.json(
-        { error: 'Message is required' },
-        { status: 400 }
-      );
+      return validationErrorResponse('Message is required');
     }
 
     // Get user preferences
@@ -43,7 +50,6 @@ export async function POST(request: NextRequest) {
     try {
       schedule = await getTodaySchedule(session.user.id, preferences);
     } catch (calendarError) {
-      console.error('Failed to fetch calendar, using empty schedule:', calendarError);
       // Provide empty schedule so chat can still work
       schedule = {
         date: new Date(),
@@ -55,39 +61,25 @@ export async function POST(request: NextRequest) {
     }
 
     // Process the chat message with real data
-    const response = await processChat(body, schedule, preferences, session.user.id);
+    const response = await processChat(body, schedule, preferences, session.user.id, session.user.name || undefined);
 
-    return NextResponse.json(response);
+    return successResponse(response);
   } catch (error) {
-    console.error('Chat API error:', error);
-
-    // Return more specific error messages for debugging
+    // Return more specific error messages based on error type
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     if (errorMessage.includes('OPENAI_API_KEY')) {
-      return NextResponse.json(
-        { error: 'AI service not configured. Please contact support.' },
-        { status: 503 }
-      );
+      return externalServiceErrorResponse('AI service not configured. Please contact support.');
     }
 
     if (errorMessage.includes('rate limit') || errorMessage.includes('429')) {
-      return NextResponse.json(
-        { error: 'AI service is busy. Please try again in a moment.' },
-        { status: 429 }
-      );
+      return rateLimitedResponse('AI service is busy. Please try again in a moment.');
     }
 
     if (errorMessage.includes('invalid_api_key') || errorMessage.includes('401')) {
-      return NextResponse.json(
-        { error: 'AI service authentication failed. Please contact support.' },
-        { status: 503 }
-      );
+      return externalServiceErrorResponse('AI service authentication failed. Please contact support.');
     }
 
-    return NextResponse.json(
-      { error: `Failed to process chat message: ${errorMessage}` },
-      { status: 500 }
-    );
+    return internalErrorResponse(`Failed to process chat message: ${errorMessage}`);
   }
 }

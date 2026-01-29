@@ -42,7 +42,6 @@ export async function GET() {
     
     return NextResponse.json(transformed);
   } catch (error) {
-    console.error('Failed to fetch email suggestions:', error);
     return NextResponse.json(
       { error: 'Failed to fetch email suggestions' },
       { status: 500 }

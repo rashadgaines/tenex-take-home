@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
 import { Card, Button } from '@/components/ui';
-import type { TimeAnalytics } from '@/types/ai';
+import { RecommendationList, RecommendationListSkeleton } from '@/components/recommendations';
+import type { TimeAnalytics, Recommendation } from '@/types/ai';
 
 function ProgressBar({ value, color }: { value: number; color: string }) {
   return (
@@ -23,10 +24,14 @@ const periodLabels: Record<string, string> = {
   month: 'This Month',
 };
 
+interface AnalyticsWithRecommendations extends TimeAnalytics {
+  recommendations?: Recommendation[];
+}
+
 export default function TimePage() {
   const router = useRouter();
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('week');
-  const [analytics, setAnalytics] = useState<TimeAnalytics | null>(null);
+  const [analytics, setAnalytics] = useState<AnalyticsWithRecommendations | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,7 +55,6 @@ export default function TimePage() {
         const data = await response.json();
         setAnalytics(data);
       } catch (err) {
-        console.error('Failed to fetch analytics:', err);
         setError('Unable to load analytics. Please try again.');
       } finally {
         setIsLoading(false);
@@ -68,6 +72,105 @@ export default function TimePage() {
     router.push('/plan?prompt=' + encodeURIComponent(prompt));
   };
 
+  // Handle executing a recommendation
+  const handleExecuteRecommendation = useCallback(async (recommendation: Recommendation): Promise<{ success: boolean; message: string }> => {
+    try {
+      // Determine the action type based on recommendation type
+      let actionType: string;
+      let payload: Record<string, unknown> = {};
+
+      switch (recommendation.type) {
+        case 'schedule_focus_time': {
+          actionType = 'schedule_focus_time';
+          const suggestedSlots = recommendation.action.payload.suggestedSlots as Array<{
+            start: string;
+            end: string;
+            timezone: string;
+          }>;
+          if (suggestedSlots && suggestedSlots.length > 0) {
+            // Use the first available slot
+            const slot = suggestedSlots[0];
+            payload = {
+              slot: {
+                start: slot.start,
+                end: slot.end,
+              },
+              title: (recommendation.action.payload.defaultTitle as string) || 'Focus Time',
+              description: (recommendation.action.payload.defaultDescription as string) || 'Protected time for deep work.',
+            };
+          }
+          break;
+        }
+        case 'add_buffer': {
+          actionType = 'add_buffer';
+          const meetingPairs = recommendation.action.payload.meetingPairs as Array<{
+            firstMeetingId: string;
+            suggestedBufferStart: string;
+            suggestedBufferEnd: string;
+          }>;
+          if (meetingPairs && meetingPairs.length > 0) {
+            const pair = meetingPairs[0];
+            payload = {
+              meetingId: pair.firstMeetingId,
+              slot: {
+                start: pair.suggestedBufferStart,
+                end: pair.suggestedBufferEnd,
+              },
+              bufferMinutes: recommendation.action.payload.bufferMinutes || 15,
+            };
+          }
+          break;
+        }
+        case 'reschedule': {
+          actionType = 'reschedule_meeting';
+          break;
+        }
+        case 'decline_meeting': {
+          actionType = 'decline_meeting';
+          break;
+        }
+        case 'batch_meetings': {
+          // For batch meetings, redirect to the plan page with a prompt
+          router.push('/plan?prompt=' + encodeURIComponent(recommendation.action.prompt));
+          return { success: true, message: 'Redirecting to planning assistant...' };
+        }
+        default:
+          return { success: false, message: 'Unknown recommendation type' };
+      }
+
+      const response = await fetch('/api/ai/recommendations/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          recommendationId: recommendation.id,
+          actionType,
+          payload,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          message: result.error || 'Failed to execute recommendation',
+        };
+      }
+
+      return {
+        success: true,
+        message: result.message || 'Recommendation applied successfully',
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : 'An unexpected error occurred',
+      };
+    }
+  }, [router]);
+
   // Loading state
   if (isLoading) {
     return (
@@ -84,6 +187,7 @@ export default function TimePage() {
             </div>
             <div className="h-64 bg-[var(--bg-tertiary)] rounded-xl" />
             <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
+            <RecommendationListSkeleton />
           </div>
         </div>
       </MainCanvas>
@@ -197,6 +301,22 @@ export default function TimePage() {
             </p>
           </div>
         </Card>
+
+        {/* Actionable Recommendations */}
+        {analytics.recommendations && analytics.recommendations.length > 0 && (
+          <div className="mb-6">
+            <h3 className="font-semibold text-[var(--text-primary)] mb-4 flex items-center gap-2">
+              <svg className="w-5 h-5 text-[var(--accent-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+              </svg>
+              Quick Actions
+            </h3>
+            <RecommendationList
+              recommendations={analytics.recommendations}
+              onExecuteRecommendation={handleExecuteRecommendation}
+            />
+          </div>
+        )}
 
         {/* Insights */}
         {analytics.insights.length > 0 && (

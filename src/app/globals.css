@@ -91,3 +91,138 @@ body {
   background: var(--accent-light);
   color: var(--text-primary);
 }
+
+/* ============================================================================
+   Animation Keyframes
+   ============================================================================ */
+
+/* Skeleton shimmer animation */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.animate-skeleton-shimmer {
+  animation: skeleton-shimmer 2s ease-in-out infinite;
+}
+
+/* Loading dots animation */
+@keyframes loading-dot {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-loading-dot {
+  animation: loading-dot 1.2s ease-in-out infinite;
+}
+
+/* Subtle pulse animation */
+@keyframes subtle-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-subtle-pulse {
+  animation: subtle-pulse 2s ease-in-out infinite;
+}
+
+/* Fade in animation */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* Slide up animation */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* ============================================================================
+   Accessibility - Reduced Motion
+   ============================================================================ */
+
+/* Respect user preference for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Disable specific animations */
+  .animate-skeleton-shimmer,
+  .animate-loading-dot,
+  .animate-subtle-pulse,
+  .animate-fade-in,
+  .animate-slide-up,
+  .animate-spin,
+  .animate-bounce,
+  .animate-pulse {
+    animation: none !important;
+  }
+}
+
+/* ============================================================================
+   Accessibility - Screen Reader Only Content
+   ============================================================================ */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Make sr-only content visible on focus (for skip links, etc.) */
+.sr-only:focus,
+.sr-only:active {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: inherit;
+  margin: inherit;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}

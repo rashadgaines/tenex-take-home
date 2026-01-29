@@ -1,16 +1,23 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
-import { getEvents, createEvent } from '@/lib/google/calendar';
+import { getEvents, createEvent, deleteEvent } from '@/lib/google/calendar';
+import {
+  successResponse,
+  unauthorizedResponse,
+  validationErrorResponse,
+  forbiddenResponse,
+  rateLimitedResponse,
+  internalErrorResponse,
+} from '@/lib/api/responses';
+import { validateRequired, validateDateRange } from '@/lib/api/validation';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 export async function GET(request: NextRequest) {
   try {
     const session = await auth();
 
     if (!session?.user?.id) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return unauthorizedResponse();
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -19,23 +26,25 @@ export async function GET(request: NextRequest) {
     const timezone = searchParams.get('timezone');
     const maxResults = Math.min(parseInt(searchParams.get('maxResults') || '100', 10), 250); // Cap at 250
 
-    if (!start || !end) {
-      return NextResponse.json(
-        { error: 'Missing required parameters: start and end dates' },
-        { status: 400 }
-      );
+    // Validate required params
+    const startValidation = validateRequired(start, 'start');
+    if (!startValidation.valid) {
+      return validationErrorResponse(startValidation.error!);
     }
 
-    // Validate date format
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      return NextResponse.json(
-        { error: 'Invalid date format. Use ISO 8601 format.' },
-        { status: 400 }
-      );
+    const endValidation = validateRequired(end, 'end');
+    if (!endValidation.valid) {
+      return validationErrorResponse(endValidation.error!);
     }
+
+    // Validate date range
+    const dateRangeValidation = validateDateRange(start, end);
+    if (!dateRangeValidation.valid) {
+      return validationErrorResponse(dateRangeValidation.error!);
+    }
+
+    const startDate = new Date(start!);
+    const endDate = new Date(end!);
 
     const events = await getEvents(session.user.id, startDate, endDate, timezone || undefined);
 
@@ -43,44 +52,30 @@ export async function GET(request: NextRequest) {
     const paginatedEvents = events.slice(0, maxResults);
     const hasMore = events.length > maxResults;
 
-    return NextResponse.json({
+    return successResponse({
       events: paginatedEvents,
       hasMore,
       total: events.length,
-      timezone: timezone || 'America/Los_Angeles'
+      timezone: timezone || DEFAULT_TIMEZONE
     });
 
   } catch (error) {
-    console.error('Calendar events API error:', error);
-
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     // Return appropriate status codes based on error type
     if (errorMessage.includes('Authentication') || errorMessage.includes('Unauthorized')) {
-      return NextResponse.json(
-        { error: 'Authentication failed' },
-        { status: 401 }
-      );
+      return unauthorizedResponse('Authentication failed');
     }
 
     if (errorMessage.includes('quota') || errorMessage.includes('rate_limit')) {
-      return NextResponse.json(
-        { error: 'Service temporarily unavailable due to high demand' },
-        { status: 429 }
-      );
+      return rateLimitedResponse('Service temporarily unavailable due to high demand');
     }
 
     if (errorMessage.includes('permissions') || errorMessage.includes('access')) {
-      return NextResponse.json(
-        { error: 'Calendar access denied. Please check permissions.' },
-        { status: 403 }
-      );
+      return forbiddenResponse('Calendar access denied. Please check permissions.');
     }
 
-    return NextResponse.json(
-      { error: 'Failed to fetch calendar events. Please try again.' },
-      { status: 500 }
-    );
+    return internalErrorResponse('Failed to fetch calendar events. Please try again.');
   }
 }
 
@@ -89,40 +84,41 @@ export async function POST(request: NextRequest) {
     const session = await auth();
 
     if (!session?.user?.id) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return unauthorizedResponse();
     }
 
     const body = await request.json();
     const { title, description, start, end, attendees, location, timezone } = body;
 
     // Validate required fields
-    if (!title || typeof title !== 'string' || !title.trim()) {
-      return NextResponse.json(
-        { error: 'Valid title is required' },
-        { status: 400 }
-      );
+    const titleValidation = validateRequired(title, 'title');
+    if (!titleValidation.valid) {
+      return validationErrorResponse(titleValidation.error!);
     }
 
-    if (!start || !end) {
-      return NextResponse.json(
-        { error: 'Start and end times are required' },
-        { status: 400 }
-      );
+    if (typeof title !== 'string' || !title.trim()) {
+      return validationErrorResponse('Valid title is required');
     }
 
-    // Validate date formats
+    // Validate start and end
+    const startValidation = validateRequired(start, 'start');
+    if (!startValidation.valid) {
+      return validationErrorResponse('Start time is required');
+    }
+
+    const endValidation = validateRequired(end, 'end');
+    if (!endValidation.valid) {
+      return validationErrorResponse('End time is required');
+    }
+
+    // Validate date range
+    const dateRangeValidation = validateDateRange(start, end);
+    if (!dateRangeValidation.valid) {
+      return validationErrorResponse(dateRangeValidation.error!);
+    }
+
     const startDate = new Date(start);
     const endDate = new Date(end);
-
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      return NextResponse.json(
-        { error: 'Invalid date format. Use ISO 8601 format.' },
-        { status: 400 }
-      );
-    }
 
     // Validate attendees array if provided
     const validAttendees = Array.isArray(attendees)
@@ -139,45 +135,70 @@ export async function POST(request: NextRequest) {
       location: location?.trim(),
     });
 
-    return NextResponse.json(event, { status: 201 });
+    return successResponse(event, 201);
 
   } catch (error) {
-    console.error('Event creation API error:', error);
-
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     // Return appropriate status codes based on error type
     if (errorMessage.includes('Authentication') || errorMessage.includes('Unauthorized')) {
-      return NextResponse.json(
-        { error: 'Authentication failed' },
-        { status: 401 }
-      );
+      return unauthorizedResponse('Authentication failed');
     }
 
     if (errorMessage.includes('permissions') || errorMessage.includes('access')) {
-      return NextResponse.json(
-        { error: 'Calendar access denied. Please check permissions.' },
-        { status: 403 }
-      );
+      return forbiddenResponse('Calendar access denied. Please check permissions.');
     }
 
     if (errorMessage.includes('quota') || errorMessage.includes('rate_limit')) {
-      return NextResponse.json(
-        { error: 'Service temporarily unavailable due to high demand' },
-        { status: 429 }
-      );
+      return rateLimitedResponse('Service temporarily unavailable due to high demand');
     }
 
     if (errorMessage.includes('Invalid event data') || errorMessage.includes('required')) {
-      return NextResponse.json(
-        { error: errorMessage },
-        { status: 400 }
-      );
+      return validationErrorResponse(errorMessage);
     }
 
-    return NextResponse.json(
-      { error: 'Failed to create calendar event. Please try again.' },
-      { status: 500 }
-    );
+    return internalErrorResponse('Failed to create calendar event. Please try again.');
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await auth();
+
+    if (!session?.user?.id) {
+      return unauthorizedResponse();
+    }
+
+    const { searchParams } = new URL(request.url);
+    const eventId = searchParams.get('eventId');
+
+    if (!eventId) {
+      return validationErrorResponse('Event ID is required');
+    }
+
+    await deleteEvent(session.user.id, eventId);
+
+    return successResponse({ success: true, message: 'Event deleted successfully' });
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    if (errorMessage.includes('Authentication') || errorMessage.includes('Unauthorized')) {
+      return unauthorizedResponse('Authentication failed');
+    }
+
+    if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+      return validationErrorResponse('Event not found');
+    }
+
+    if (errorMessage.includes('permissions') || errorMessage.includes('access')) {
+      return forbiddenResponse('Unable to delete this event. You may not have permission.');
+    }
+
+    if (errorMessage.includes('quota') || errorMessage.includes('rate_limit')) {
+      return rateLimitedResponse('Service temporarily unavailable due to high demand');
+    }
+
+    return internalErrorResponse('Failed to delete calendar event. Please try again.');
   }
 }

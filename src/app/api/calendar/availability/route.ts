@@ -3,12 +3,13 @@ import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { getAvailability } from '@/lib/google/calendar';
 import type { UserPreferences } from '@/types/user';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   workingHours: { start: '09:00', end: '17:00' },
   protectedTimes: [],
   defaultMeetingDuration: 30,
-  timezone: 'America/Los_Angeles',
+  timezone: DEFAULT_TIMEZONE,
 };
 
 export async function GET(request: NextRequest) {
@@ -52,7 +53,6 @@ export async function GET(request: NextRequest) {
     
     return NextResponse.json(slots);
   } catch (error) {
-    console.error('Failed to fetch availability:', error);
     return NextResponse.json(
       { error: 'Failed to fetch availability' },
       { status: 500 }

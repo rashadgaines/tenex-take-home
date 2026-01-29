@@ -9,9 +9,19 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, hint, className = '', id, ...props }, ref) => {
+  ({ label, error, hint, className = '', id, required, ...props }, ref) => {
     const generatedId = useId();
     const inputId = id || generatedId;
+    const errorId = `${inputId}-error`;
+    const hintId = `${inputId}-hint`;
+    const hasError = Boolean(error);
+    const hasHint = Boolean(hint);
+
+    // Build aria-describedby based on what's present
+    const describedBy = [
+      hasError ? errorId : null,
+      hasHint && !hasError ? hintId : null,
+    ].filter(Boolean).join(' ') || undefined;
 
     return (
       <div className="w-full">
@@ -21,27 +31,37 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             className="block text-sm font-medium text-[var(--text-primary)] mb-1.5"
           >
             {label}
+            {required && <span className="text-[var(--status-error)] ml-1" aria-hidden="true">*</span>}
           </label>
         )}
         <input
           ref={ref}
           id={inputId}
+          aria-invalid={hasError || undefined}
+          aria-describedby={describedBy}
+          aria-required={required || undefined}
+          required={required}
           className={`
             w-full px-3 py-2
             bg-[var(--bg-tertiary)] border rounded-lg
             text-[var(--text-primary)]
             placeholder:text-[var(--text-tertiary)]
             transition-colors duration-150
-            focus:outline-none focus:border-[var(--border-medium)]
+            focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)] focus:ring-offset-1
             disabled:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed
             ${error ? 'border-[var(--status-error)]' : 'border-[var(--border-medium)]'}
             ${className}
           `}
           {...props}
         />
-        {(error || hint) && (
-          <p className={`mt-1.5 text-sm ${error ? 'text-[var(--status-error)]' : 'text-[var(--text-secondary)]'}`}>
-            {error || hint}
+        {error && (
+          <p id={errorId} className="mt-1.5 text-sm text-[var(--status-error)]" role="alert">
+            {error}
+          </p>
+        )}
+        {hint && !error && (
+          <p id={hintId} className="mt-1.5 text-sm text-[var(--text-secondary)]">
+            {hint}
           </p>
         )}
       </div>
@@ -58,9 +78,19 @@ interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement
 }
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ label, error, hint, className = '', id, ...props }, ref) => {
+  ({ label, error, hint, className = '', id, required, ...props }, ref) => {
     const generatedId = useId();
     const inputId = id || generatedId;
+    const errorId = `${inputId}-error`;
+    const hintId = `${inputId}-hint`;
+    const hasError = Boolean(error);
+    const hasHint = Boolean(hint);
+
+    // Build aria-describedby based on what's present
+    const describedBy = [
+      hasError ? errorId : null,
+      hasHint && !hasError ? hintId : null,
+    ].filter(Boolean).join(' ') || undefined;
 
     return (
       <div className="w-full">
@@ -70,11 +100,16 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
             className="block text-sm font-medium text-[var(--text-primary)] mb-1.5"
           >
             {label}
+            {required && <span className="text-[var(--status-error)] ml-1" aria-hidden="true">*</span>}
           </label>
         )}
         <textarea
           ref={ref}
           id={inputId}
+          aria-invalid={hasError || undefined}
+          aria-describedby={describedBy}
+          aria-required={required || undefined}
+          required={required}
           className={`
             w-full px-3 py-2
             bg-[var(--bg-tertiary)] border rounded-lg
@@ -82,16 +117,21 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
             placeholder:text-[var(--text-tertiary)]
             transition-colors duration-150
             resize-none
-            focus:outline-none focus:border-[var(--border-medium)]
+            focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)] focus:ring-offset-1
             disabled:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed
             ${error ? 'border-[var(--status-error)]' : 'border-[var(--border-medium)]'}
             ${className}
           `}
           {...props}
         />
-        {(error || hint) && (
-          <p className={`mt-1.5 text-sm ${error ? 'text-[var(--status-error)]' : 'text-[var(--text-secondary)]'}`}>
-            {error || hint}
+        {error && (
+          <p id={errorId} className="mt-1.5 text-sm text-[var(--status-error)]" role="alert">
+            {error}
+          </p>
+        )}
+        {hint && !error && (
+          <p id={hintId} className="mt-1.5 text-sm text-[var(--text-secondary)]">
+            {hint}
           </p>
         )}
       </div>

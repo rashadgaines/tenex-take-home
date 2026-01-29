@@ -1,5 +1,6 @@
 import { google, calendar_v3 } from 'googleapis';
 import { getGoogleTokens, updateGoogleTokens } from '../auth';
+import { prisma } from '../db';
 import type { CalendarEvent, Attendee, DaySchedule, TimeSlot } from '@/types/calendar';
 import type { UserPreferences } from '@/types/user';
 import {
@@ -47,14 +48,12 @@ async function getCalendarClient(userId: string) {
           );
         }
       } catch (error) {
-        console.error('Failed to update Google tokens:', error);
         // Don't throw here as it would break the calendar client
       }
     });
 
     return google.calendar({ version: 'v3', auth: oauth2Client });
   } catch (error) {
-    console.error('Failed to create calendar client:', error);
     throw new Error('Unable to authenticate with Google Calendar. Please re-authenticate.');
   }
 }
@@ -205,7 +204,6 @@ export async function getEvents(
       });
 
       if (!response.data?.items) {
-        console.warn('No events returned from Google Calendar API');
         return [];
       }
 
@@ -216,7 +214,6 @@ export async function getEvents(
           const mappedEvent = await mapGoogleEvent(event, userId);
           validEvents.push(mappedEvent);
         } catch (mappingError) {
-          console.warn(`Failed to map event ${event.id}:`, mappingError);
           // Continue with other events
         }
       }
@@ -225,7 +222,6 @@ export async function getEvents(
 
     } catch (error) {
       lastError = error as Error;
-      console.error(`Calendar API attempt ${attempt}/${maxRetries} failed:`, error);
 
       // Check for specific error types
       if (error instanceof Error) {
@@ -525,9 +521,7 @@ export async function createEvent(
   // Check for duplicate attendees
   const uniqueAttendees = [...new Set(validAttendees)];
 
-  if (uniqueAttendees.length !== validAttendees.length) {
-    console.warn('Duplicate attendees removed from event creation');
-  }
+  // Duplicates silently removed
 
   // Validate title length
   const title = event.title.trim();
@@ -573,7 +567,6 @@ export async function createEvent(
           },
         };
       } catch (conferenceError) {
-        console.warn('Could not create Google Meet conference:', conferenceError);
         // Continue without conference
       }
 
@@ -592,7 +585,6 @@ export async function createEvent(
 
     } catch (error) {
       lastError = error as Error;
-      console.error(`Event creation attempt ${attempt}/${maxRetries} failed:`, error);
 
       // Check for specific error types
       if (error instanceof Error) {
@@ -624,4 +616,270 @@ export async function createEvent(
   }
 
   throw new Error(`Failed to create calendar event after ${maxRetries} attempts: ${lastError?.message}`);
+}
+
+// Delete a calendar event
+export async function deleteEvent(
+  userId: string,
+  eventId: string,
+  maxRetries: number = 3
+): Promise<void> {
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
+
+  if (!eventId) {
+    throw new Error('Event ID is required');
+  }
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const calendar = await getCalendarClient(userId);
+
+      await calendar.events.delete({
+        calendarId: 'primary',
+        eventId: eventId,
+        sendUpdates: 'all', // Notify attendees
+      });
+
+      return;
+
+    } catch (error) {
+      lastError = error as Error;
+
+      // Check for specific error types
+      if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+
+        if (message.includes('not found') || message.includes('404')) {
+          throw new Error('Event not found. It may have already been deleted.');
+        }
+
+        if (message.includes('access_denied') || message.includes('insufficient_permissions')) {
+          throw new Error('Insufficient permissions to delete this event.');
+        }
+
+        if (message.includes('quota') || message.includes('rate_limit')) {
+          throw new Error('Google Calendar API quota exceeded. Please try again later.');
+        }
+      }
+
+      // Wait before retry (exponential backoff)
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(`Failed to delete calendar event after ${maxRetries} attempts: ${lastError?.message}`);
+}
+
+// Update a calendar event (for rescheduling)
+export async function updateEvent(
+  userId: string,
+  eventId: string,
+  updates: {
+    title?: string;
+    description?: string;
+    start?: Date;
+    end?: Date;
+    timezone?: string;
+    location?: string;
+  },
+  maxRetries: number = 3
+): Promise<CalendarEvent> {
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
+
+  if (!eventId) {
+    throw new Error('Event ID is required');
+  }
+
+  // Get user's timezone
+  const userTimezone = updates.timezone || await getUserTimezone(userId);
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const calendar = await getCalendarClient(userId);
+
+      // Build the update payload
+      const requestBody: Record<string, unknown> = {};
+
+      if (updates.title !== undefined) {
+        requestBody.summary = updates.title.trim();
+      }
+
+      if (updates.description !== undefined) {
+        requestBody.description = updates.description.trim();
+      }
+
+      if (updates.start && updates.end) {
+        requestBody.start = formatForGoogleCalendar(updates.start, false, userTimezone);
+        requestBody.end = formatForGoogleCalendar(updates.end, false, userTimezone);
+      }
+
+      if (updates.location !== undefined) {
+        requestBody.location = updates.location.trim();
+      }
+
+      const response = await calendar.events.patch({
+        calendarId: 'primary',
+        eventId: eventId,
+        requestBody,
+        sendUpdates: 'all', // Notify attendees of changes
+      });
+
+      if (!response.data) {
+        throw new Error('No event data returned from Google Calendar API');
+      }
+
+      return await mapGoogleEvent(response.data, userId);
+
+    } catch (error) {
+      lastError = error as Error;
+
+      if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+
+        if (message.includes('not found') || message.includes('404')) {
+          throw new Error('Event not found. It may have been deleted.');
+        }
+
+        if (message.includes('forbidden') || message.includes('permission')) {
+          throw new Error('You do not have permission to edit this event. Only the organizer can reschedule.');
+        }
+
+        if (message.includes('quota') || message.includes('rate_limit')) {
+          throw new Error('Google Calendar API quota exceeded. Please try again later.');
+        }
+      }
+
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(`Failed to update calendar event after ${maxRetries} attempts: ${lastError?.message}`);
+}
+
+// Decline a calendar event invitation
+export async function declineEvent(
+  userId: string,
+  eventId: string,
+  maxRetries: number = 3
+): Promise<void> {
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
+
+  if (!eventId) {
+    throw new Error('Event ID is required');
+  }
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const calendar = await getCalendarClient(userId);
+
+      // First, get the current event to find our attendee entry
+      const eventResponse = await calendar.events.get({
+        calendarId: 'primary',
+        eventId: eventId,
+      });
+
+      const event = eventResponse.data;
+      if (!event) {
+        throw new Error('Event not found');
+      }
+
+      // Get user's email to find their attendee entry
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+
+      if (!user?.email) {
+        throw new Error('User email not found');
+      }
+
+      // Update the attendee response status to declined
+      const attendees = event.attendees || [];
+      const updatedAttendees = attendees.map((attendee) => {
+        if (attendee.email?.toLowerCase() === user.email?.toLowerCase()) {
+          return { ...attendee, responseStatus: 'declined' };
+        }
+        return attendee;
+      });
+
+      // Patch the event with updated attendee status
+      await calendar.events.patch({
+        calendarId: 'primary',
+        eventId: eventId,
+        requestBody: {
+          attendees: updatedAttendees,
+        },
+        sendUpdates: 'all', // Notify organizer of decline
+      });
+
+      return;
+
+    } catch (error) {
+      lastError = error as Error;
+
+      if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+
+        if (message.includes('not found') || message.includes('404')) {
+          throw new Error('Event not found. It may have been deleted or cancelled.');
+        }
+
+        if (message.includes('quota') || message.includes('rate_limit')) {
+          throw new Error('Google Calendar API quota exceeded. Please try again later.');
+        }
+      }
+
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(`Failed to decline calendar event after ${maxRetries} attempts: ${lastError?.message}`);
+}
+
+// Get a single event by ID
+export async function getEvent(
+  userId: string,
+  eventId: string
+): Promise<CalendarEvent | null> {
+  if (!userId || !eventId) {
+    return null;
+  }
+
+  try {
+    const calendar = await getCalendarClient(userId);
+
+    const response = await calendar.events.get({
+      calendarId: 'primary',
+      eventId: eventId,
+    });
+
+    if (!response.data) {
+      return null;
+    }
+
+    return await mapGoogleEvent(response.data, userId);
+  } catch (error) {
+    return null;
+  }
 }

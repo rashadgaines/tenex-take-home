@@ -48,7 +48,6 @@ export function parseDateInTimezone(dateStr: string, timezone: string = getClien
     // Otherwise, assume it's in the user's timezone
     return fromZonedTime(dateStr, timezone);
   } catch (error) {
-    console.warn('Failed to parse date:', dateStr, error);
     return new Date(dateStr); // fallback
   }
 }

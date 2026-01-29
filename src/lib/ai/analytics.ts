@@ -436,6 +436,63 @@ export function calculateDayStats(events: CalendarEvent[]): {
 }
 
 /**
+ * Generate a unique recommendation ID based on timestamp and random component
+ */
+function generateUniqueId(prefix: string): string {
+  const timestamp = Date.now().toString(36);
+  const randomPart = Math.random().toString(36).substring(2, 8);
+  return `${prefix}-${timestamp}-${randomPart}`;
+}
+
+/**
+ * Calculate total hours from available slots
+ */
+function calculateTotalHoursFromSlots(slots: TimeSlot[]): number {
+  const totalMinutes = slots.reduce((sum, slot) => {
+    const duration = (new Date(slot.end).getTime() - new Date(slot.start).getTime()) / 60000;
+    return sum + duration;
+  }, 0);
+  return Math.round(totalMinutes / 60 * 10) / 10;
+}
+
+/**
+ * Find back-to-back meeting pairs for buffer insertion
+ */
+function findBackToBackMeetingPairs(schedules: DaySchedule[]): Array<{
+  firstMeeting: CalendarEvent;
+  secondMeeting: CalendarEvent;
+  date: Date;
+}> {
+  const pairs: Array<{
+    firstMeeting: CalendarEvent;
+    secondMeeting: CalendarEvent;
+    date: Date;
+  }> = [];
+
+  for (const schedule of schedules) {
+    const meetings = schedule.events
+      .filter((e) => e.category === 'meeting' || e.category === 'external')
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    for (let i = 0; i < meetings.length - 1; i++) {
+      const currentEnd = new Date(meetings[i].end).getTime();
+      const nextStart = new Date(meetings[i + 1].start).getTime();
+      const gapMinutes = (nextStart - currentEnd) / 60000;
+
+      if (gapMinutes < 5) {
+        pairs.push({
+          firstMeeting: meetings[i],
+          secondMeeting: meetings[i + 1],
+          date: new Date(schedule.date),
+        });
+      }
+    }
+  }
+
+  return pairs;
+}
+
+/**
  * Generate actionable recommendations based on schedule analysis
  */
 export function generateActionableRecommendations(
@@ -443,7 +500,6 @@ export function generateActionableRecommendations(
   preferences: UserPreferences
 ): Recommendation[] {
   const recommendations: Recommendation[] = [];
-  let recId = 1;
 
   if (schedules.length === 0) {
     return recommendations;
@@ -452,34 +508,62 @@ export function generateActionableRecommendations(
   // Find large available blocks (2+ hours) for focus time
   const largeBlocks = findLargeAvailableBlocks(schedules);
   if (largeBlocks.length > 0) {
+    const totalFocusHours = calculateTotalHoursFromSlots(largeBlocks);
+    const topSlots = largeBlocks.slice(0, 3);
+
     recommendations.push({
-      id: `rec-${recId++}`,
+      id: generateUniqueId('focus'),
       type: 'schedule_focus_time',
       priority: 'high',
       title: 'Block focus time',
       description: `You have ${largeBlocks.length} slot(s) of 2+ hours available this week`,
-      impact: 'Protect your deep work time from meeting creep',
+      impact: `Save ${totalFocusHours} hours of potential deep work time`,
       action: {
-        type: 'schedule_event',
-        payload: { suggestedSlots: largeBlocks.slice(0, 3) },
+        type: 'schedule_focus_time',
+        payload: {
+          suggestedSlots: topSlots.map(slot => ({
+            start: new Date(slot.start).toISOString(),
+            end: new Date(slot.end).toISOString(),
+            timezone: slot.timezone,
+            durationMinutes: Math.round((new Date(slot.end).getTime() - new Date(slot.start).getTime()) / 60000),
+          })),
+          defaultTitle: 'Focus Time',
+          defaultDescription: 'Protected time for deep work and focused tasks.',
+        },
         prompt: 'Block focus time during my available slots this week',
       },
     });
   }
 
   // Check for back-to-back meetings
+  const backToBackPairs = findBackToBackMeetingPairs(schedules);
   const backToBackDays = findBackToBackMeetingDays(schedules);
   if (backToBackDays.length > 0) {
+    const bufferCount = backToBackPairs.length;
+    const potentialBufferMinutes = bufferCount * 15;
+
     recommendations.push({
-      id: `rec-${recId++}`,
+      id: generateUniqueId('buffer'),
       type: 'add_buffer',
       priority: 'medium',
       title: 'Add meeting buffers',
-      description: `You have back-to-back meetings on ${backToBackDays.join(', ')}`,
-      impact: 'Add 15-min buffers to reduce stress and prepare better',
+      description: `You have ${bufferCount} back-to-back meeting transition(s) on ${backToBackDays.join(', ')}`,
+      impact: `Add ${potentialBufferMinutes} minutes of buffer time to reduce stress`,
       action: {
-        type: 'modify_schedule',
-        payload: { days: backToBackDays },
+        type: 'add_buffer',
+        payload: {
+          days: backToBackDays,
+          meetingPairs: backToBackPairs.slice(0, 5).map(pair => ({
+            firstMeetingId: pair.firstMeeting.id,
+            firstMeetingTitle: pair.firstMeeting.title,
+            secondMeetingId: pair.secondMeeting.id,
+            secondMeetingTitle: pair.secondMeeting.title,
+            date: pair.date.toISOString(),
+            suggestedBufferStart: new Date(pair.firstMeeting.end).toISOString(),
+            suggestedBufferEnd: new Date(new Date(pair.firstMeeting.end).getTime() + 15 * 60000).toISOString(),
+          })),
+          bufferMinutes: 15,
+        },
         prompt: 'Add 15-minute buffers between my meetings this week',
       },
     });
@@ -489,15 +573,18 @@ export function generateActionableRecommendations(
   const scatteredDays = findScatteredMeetingDays(schedules);
   if (scatteredDays.length > 0) {
     recommendations.push({
-      id: `rec-${recId++}`,
+      id: generateUniqueId('batch'),
       type: 'batch_meetings',
       priority: 'low',
       title: 'Consolidate meetings',
       description: `${scatteredDays.join(', ')} have meetings scattered throughout the day`,
-      impact: 'Create longer focus blocks by batching meetings together',
+      impact: 'Create 2+ hour focus blocks by batching meetings together',
       action: {
-        type: 'suggest_reorganization',
-        payload: { days: scatteredDays },
+        type: 'batch_meetings',
+        payload: {
+          days: scatteredDays,
+          suggestion: 'Group meetings in the morning or afternoon',
+        },
         prompt: 'How can I batch my meetings together to create more focus time?',
       },
     });
@@ -507,16 +594,22 @@ export function generateActionableRecommendations(
   const totalMeetingHours = schedules.reduce((sum, s) => sum + s.stats.meetingMinutes, 0) / 60;
   const avgMeetingHoursPerDay = totalMeetingHours / schedules.length;
   if (avgMeetingHoursPerDay > 4) {
+    const excessHours = Math.round((avgMeetingHoursPerDay - 4) * schedules.length * 10) / 10;
+
     recommendations.push({
-      id: `rec-${recId++}`,
+      id: generateUniqueId('decline'),
       type: 'decline_meeting',
       priority: 'high',
       title: 'Review meeting load',
       description: `You're averaging ${avgMeetingHoursPerDay.toFixed(1)} hours of meetings per day`,
-      impact: 'Declining non-essential meetings could free up significant time',
+      impact: `Recover up to ${excessHours} hours this week by declining non-essential meetings`,
       action: {
-        type: 'analyze_meetings',
-        payload: { threshold: 4 },
+        type: 'decline_meeting',
+        payload: {
+          threshold: 4,
+          totalMeetingHours: Math.round(totalMeetingHours * 10) / 10,
+          avgPerDay: Math.round(avgMeetingHoursPerDay * 10) / 10,
+        },
         prompt: 'Which meetings this week could I decline or make optional?',
       },
     });
@@ -525,16 +618,27 @@ export function generateActionableRecommendations(
   // Check for very early or late meetings
   const earlyLateMeetings = findEarlyLateMeetings(schedules, preferences);
   if (earlyLateMeetings.length > 0) {
+    const meetingDetails = earlyLateMeetings.slice(0, 5).map(m => ({
+      id: m.id,
+      title: m.title,
+      start: new Date(m.start).toISOString(),
+      end: new Date(m.end).toISOString(),
+      attendees: m.attendees.map(a => a.email),
+    }));
+
     recommendations.push({
-      id: `rec-${recId++}`,
+      id: generateUniqueId('reschedule'),
       type: 'reschedule',
       priority: 'medium',
       title: 'Reschedule off-hours meetings',
-      description: `${earlyLateMeetings.length} meeting(s) are outside your working hours`,
-      impact: 'Protect your work-life balance',
+      description: `${earlyLateMeetings.length} meeting(s) are outside your working hours (${preferences.workingHours.start} - ${preferences.workingHours.end})`,
+      impact: 'Protect your work-life balance and personal time',
       action: {
-        type: 'reschedule_meetings',
-        payload: { meetings: earlyLateMeetings.map(m => m.id) },
+        type: 'reschedule_meeting',
+        payload: {
+          meetings: meetingDetails,
+          workingHours: preferences.workingHours,
+        },
         prompt: 'Help me reschedule meetings that are outside my working hours',
       },
     });

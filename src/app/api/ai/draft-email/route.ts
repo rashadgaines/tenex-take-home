@@ -1,22 +1,39 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { generateEmailDraft } from '@/lib/ai/chat';
+import { NextRequest } from 'next/server';
+import { auth } from '@/lib/auth';
+import { generateEmailDraft } from '@/lib/ai/chat/index';
+import { generateSubjectLine, generateAlternativeSubjects } from '@/lib/email/subject';
 import { DraftEmailRequest, DraftEmailResponse } from '@/types/ai';
 import { EmailDraft } from '@/types/email';
+import {
+  successResponse,
+  validationErrorResponse,
+  unauthorizedResponse,
+  internalErrorResponse,
+} from '@/lib/api/responses';
+import { validateRequired } from '@/lib/api/validation';
 
 export async function POST(request: NextRequest) {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body: DraftEmailRequest = await request.json();
 
     // Validate required fields
-    if (!body.recipient || !body.purpose) {
-      return NextResponse.json(
-        { error: 'Recipient and purpose are required' },
-        { status: 400 }
-      );
+    const recipientValidation = validateRequired(body.recipient, 'recipient');
+    if (!recipientValidation.valid) {
+      return validationErrorResponse(recipientValidation.error!);
     }
 
-    // TODO: Get user name from session
-    const userName = 'User';
+    const purposeValidation = validateRequired(body.purpose, 'purpose');
+    if (!purposeValidation.valid) {
+      return validationErrorResponse(purposeValidation.error!);
+    }
+
+    const userName = session.user.name || 'User';
 
     // Convert suggested times if provided
     const suggestedTimes = body.suggestedTimes?.map((slot) => new Date(slot.start));
@@ -49,73 +66,8 @@ export async function POST(request: NextRequest) {
       alternatives: generateAlternativeSubjects(body.purpose),
     };
 
-    return NextResponse.json(response);
+    return successResponse(response);
   } catch (error) {
-    console.error('Draft email API error:', error);
-    return NextResponse.json(
-      { error: 'Failed to generate email draft' },
-      { status: 500 }
-    );
+    return internalErrorResponse('Failed to generate email draft');
   }
-}
-
-/**
- * Generate a subject line based on the email purpose
- */
-function generateSubjectLine(purpose: string): string {
-  const lowerPurpose = purpose.toLowerCase();
-
-  if (lowerPurpose.includes('meeting') || lowerPurpose.includes('schedule')) {
-    return 'Meeting Request';
-  }
-
-  if (lowerPurpose.includes('follow up') || lowerPurpose.includes('followup')) {
-    return 'Following Up';
-  }
-
-  if (lowerPurpose.includes('introduction') || lowerPurpose.includes('introduce')) {
-    return 'Introduction';
-  }
-
-  if (lowerPurpose.includes('question') || lowerPurpose.includes('ask')) {
-    return 'Quick Question';
-  }
-
-  if (lowerPurpose.includes('thank')) {
-    return 'Thank You';
-  }
-
-  // Default: use a shortened version of the purpose
-  const words = purpose.split(' ').slice(0, 5).join(' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/**
- * Generate alternative subject lines
- */
-function generateAlternativeSubjects(purpose: string): string[] {
-  const lowerPurpose = purpose.toLowerCase();
-  const alternatives: string[] = [];
-
-  if (lowerPurpose.includes('meeting') || lowerPurpose.includes('schedule')) {
-    alternatives.push(
-      'Let\'s Connect',
-      'Time to Chat?',
-      'Scheduling a Meeting'
-    );
-  } else if (lowerPurpose.includes('follow up')) {
-    alternatives.push(
-      'Checking In',
-      'Quick Follow-up',
-      'Circling Back'
-    );
-  } else {
-    alternatives.push(
-      'Quick Note',
-      'Reaching Out',
-      'Brief Message'
-    );
-  }
-
-  return alternatives;
 }

@@ -39,7 +39,6 @@ export async function POST(
     
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('Failed to dismiss suggestion:', error);
     return NextResponse.json(
       { error: 'Failed to dismiss suggestion' },
       { status: 500 }

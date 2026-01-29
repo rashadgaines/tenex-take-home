@@ -58,12 +58,14 @@ export function DropdownMenuTrigger({ asChild, children }: DropdownMenuTriggerPr
   };
 
   if (asChild && isValidElement(children)) {
-    const child = children as ReactElement<{ onClick?: (e: React.MouseEvent) => void }>;
+    const child = children as ReactElement<{ onClick?: (e: React.MouseEvent) => void; 'aria-expanded'?: boolean; 'aria-haspopup'?: string }>;
     return cloneElement(child, {
       onClick: (e: React.MouseEvent) => {
         handleClick(e);
         child.props.onClick?.(e);
       },
+      'aria-expanded': open,
+      'aria-haspopup': 'menu' as const,
     });
   }
 
@@ -71,7 +73,7 @@ export function DropdownMenuTrigger({ asChild, children }: DropdownMenuTriggerPr
     <button
       onClick={handleClick}
       aria-expanded={open}
-      aria-haspopup={true}
+      aria-haspopup="menu"
       type="button"
     >
       {children}
@@ -140,6 +142,7 @@ export const DropdownMenuContent = forwardRef<HTMLDivElement, DropdownMenuConten
           if (typeof ref === 'function') ref(node);
           else if (ref) ref.current = node;
         }}
+        role="menu"
         className={`
           absolute z-50
           min-w-[12rem] max-h-[300px] overflow-y-auto
@@ -175,11 +178,13 @@ export const DropdownMenuItem = forwardRef<HTMLButtonElement, DropdownMenuItemPr
       <button
         ref={ref}
         type="button"
+        role="menuitem"
         onClick={handleClick}
         className={`
           w-full px-3 py-2
           text-left text-sm text-[var(--text-primary)]
           hover:bg-[var(--bg-tertiary)]
+          focus-visible:outline-none focus-visible:bg-[var(--bg-tertiary)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent-primary)]
           transition-colors duration-100
           cursor-pointer
           ${className}

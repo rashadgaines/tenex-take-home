@@ -5,12 +5,13 @@ import { getEvents } from '@/lib/google/calendar';
 import { calculateTimeAnalytics, generateActionableRecommendations, calculateAvailableSlots } from '@/lib/ai/analytics';
 import type { UserPreferences } from '@/types/user';
 import type { DaySchedule, CalendarEvent } from '@/types/calendar';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   workingHours: { start: '09:00', end: '17:00' },
   protectedTimes: [],
   defaultMeetingDuration: 30,
-  timezone: 'America/Los_Angeles',
+  timezone: DEFAULT_TIMEZONE,
 };
 
 export async function GET(request: NextRequest) {
@@ -77,7 +78,6 @@ export async function GET(request: NextRequest) {
       recommendations,
     });
   } catch (error) {
-    console.error('Analytics API error:', error);
     return NextResponse.json(
       { error: 'Failed to generate analytics' },
       { status: 500 }

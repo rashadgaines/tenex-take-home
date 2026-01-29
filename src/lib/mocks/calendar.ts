@@ -1,4 +1,5 @@
 import { CalendarEvent, DaySchedule, TimeSlot } from '@/types';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 const today = new Date();
 const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -12,8 +13,6 @@ function addDays(date: Date, days: number): Date {
   result.setDate(result.getDate() + days);
   return result;
 }
-
-const DEFAULT_TIMEZONE = 'America/Los_Angeles';
 
 export const mockEvents: CalendarEvent[] = [
   {
@@ -90,16 +89,16 @@ export const mockEvents: CalendarEvent[] = [
 ];
 
 export const mockAvailableSlots: TimeSlot[] = [
-  { start: addHours(startOfDay, 11), end: addHours(startOfDay, 12), available: true, timezone: 'America/Los_Angeles' },
-  { start: addHours(startOfDay, 12), end: addHours(startOfDay, 14), available: true, timezone: 'America/Los_Angeles' },
-  { start: addHours(startOfDay, 14.5), end: addHours(startOfDay, 16), available: true, timezone: 'America/Los_Angeles' },
-  { start: addHours(addDays(startOfDay, 1), 14), end: addHours(addDays(startOfDay, 1), 17), available: true, timezone: 'America/Los_Angeles' },
-  { start: addHours(addDays(startOfDay, 2), 14), end: addHours(addDays(startOfDay, 2), 17), available: true, timezone: 'America/Los_Angeles' },
+  { start: addHours(startOfDay, 11), end: addHours(startOfDay, 12), available: true, timezone: DEFAULT_TIMEZONE },
+  { start: addHours(startOfDay, 12), end: addHours(startOfDay, 14), available: true, timezone: DEFAULT_TIMEZONE },
+  { start: addHours(startOfDay, 14.5), end: addHours(startOfDay, 16), available: true, timezone: DEFAULT_TIMEZONE },
+  { start: addHours(addDays(startOfDay, 1), 14), end: addHours(addDays(startOfDay, 1), 17), available: true, timezone: DEFAULT_TIMEZONE },
+  { start: addHours(addDays(startOfDay, 2), 14), end: addHours(addDays(startOfDay, 2), 17), available: true, timezone: DEFAULT_TIMEZONE },
 ];
 
 export const mockTodaySchedule: DaySchedule = {
   date: today,
-  timezone: 'America/Los_Angeles',
+  timezone: DEFAULT_TIMEZONE,
   events: mockEvents.filter((e) => {
     const eventDate = e.start;
     return (

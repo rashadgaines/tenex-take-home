@@ -52,7 +52,6 @@ export async function POST(
       threadId: result.threadId,
     });
   } catch (error) {
-    console.error('Failed to send suggested email:', error);
     return NextResponse.json(
       { error: 'Failed to send email' },
       { status: 500 }

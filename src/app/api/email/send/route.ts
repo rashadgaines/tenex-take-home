@@ -28,7 +28,6 @@ export async function POST(request: NextRequest) {
       threadId: result.threadId,
     });
   } catch (error) {
-    console.error('Failed to send email:', error);
     return NextResponse.json(
       { error: 'Failed to send email' },
       { status: 500 }

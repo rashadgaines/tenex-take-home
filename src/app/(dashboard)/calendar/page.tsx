@@ -1,11 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
-import { Card, Button } from '@/components/ui';
+import { Card, Button, VisuallyHidden } from '@/components/ui';
+import { EventPopover } from '@/components/calendar';
 import { CalendarEvent, DaySchedule } from '@/types';
 import { getClientTimezone, startOfDayInTimezone } from '@/lib/date-utils';
+import { detectConflicts, getConflictMessage } from '@/lib/calendar/conflicts';
+import { useCalendarUndo } from '@/hooks/useUndo';
+import { useToast } from '@/hooks/useToast';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 function formatTime(date: Date, timezone: string): string {
   return date.toLocaleTimeString('en-US', {
@@ -53,11 +58,27 @@ function getWeekDays(baseDate: Date, weekStartsOn: number = 0): Date[] {
   return days;
 }
 
-const categoryColors: Record<CalendarEvent['category'], { bg: string; border: string; text: string; textSecondary: string }> = {
-  meeting: { bg: 'bg-blue-600/80', border: 'border-l-blue-400', text: 'text-white', textSecondary: 'text-blue-100' },
-  external: { bg: 'bg-amber-600/80', border: 'border-l-amber-400', text: 'text-white', textSecondary: 'text-amber-100' },
-  focus: { bg: 'bg-emerald-600/80', border: 'border-l-emerald-400', text: 'text-white', textSecondary: 'text-emerald-100' },
-  personal: { bg: 'bg-violet-600/80', border: 'border-l-violet-400', text: 'text-white', textSecondary: 'text-violet-100' },
+function formatWeekRange(weekDays: Date[]): string {
+  if (weekDays.length === 0) return '';
+  const start = weekDays[0];
+  const end = weekDays[weekDays.length - 1];
+  const startMonth = start.toLocaleDateString('en-US', { month: 'short' });
+  const endMonth = end.toLocaleDateString('en-US', { month: 'short' });
+  const startDay = start.getDate();
+  const endDay = end.getDate();
+  const year = end.getFullYear();
+
+  if (startMonth === endMonth) {
+    return `${startMonth} ${startDay} - ${endDay}, ${year}`;
+  }
+  return `${startMonth} ${startDay} - ${endMonth} ${endDay}, ${year}`;
+}
+
+const categoryColors: Record<CalendarEvent['category'], { bg: string; border: string; text: string; textSecondary: string; hoverBg: string }> = {
+  meeting: { bg: 'bg-blue-600/80', border: 'border-l-blue-400', text: 'text-white', textSecondary: 'text-blue-100', hoverBg: 'hover:bg-blue-600/90' },
+  external: { bg: 'bg-amber-600/80', border: 'border-l-amber-400', text: 'text-white', textSecondary: 'text-amber-100', hoverBg: 'hover:bg-amber-600/90' },
+  focus: { bg: 'bg-emerald-600/80', border: 'border-l-emerald-400', text: 'text-white', textSecondary: 'text-emerald-100', hoverBg: 'hover:bg-emerald-600/90' },
+  personal: { bg: 'bg-violet-600/80', border: 'border-l-violet-400', text: 'text-white', textSecondary: 'text-violet-100', hoverBg: 'hover:bg-violet-600/90' },
 };
 
 const hours = Array.from({ length: 12 }, (_, i) => i + 8); // 8 AM to 7 PM
@@ -80,20 +101,139 @@ const initialFormState: NewEventForm = {
   location: '',
 };
 
+// Skeleton Loader Component
+function CalendarSkeleton() {
+  return (
+    <Card padding="none" className="overflow-hidden">
+      <div className="animate-pulse">
+        {/* Header skeleton */}
+        <div className="grid grid-cols-8 border-b border-[var(--border-medium)]">
+          <div className="p-3" />
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="p-3 border-l border-[var(--border-medium)]">
+              <div className="h-4 w-12 bg-[var(--bg-elevated)] rounded mb-2 mx-auto" />
+              <div className="h-8 w-8 bg-[var(--bg-elevated)] rounded mx-auto" />
+            </div>
+          ))}
+        </div>
+        {/* Grid skeleton */}
+        <div className="grid grid-cols-8" style={{ height: '720px' }}>
+          <div className="relative">
+            {hours.map((hour) => (
+              <div
+                key={hour}
+                className="absolute w-full text-right pr-3"
+                style={{ top: `${(hour - 8) * 60 - 6}px` }}
+              >
+                <div className="h-3 w-12 bg-[var(--bg-elevated)] rounded ml-auto" />
+              </div>
+            ))}
+          </div>
+          {Array.from({ length: 7 }).map((_, dayIndex) => (
+            <div key={dayIndex} className="relative border-l border-[var(--border-medium)]">
+              {hours.map((hour) => (
+                <div
+                  key={hour}
+                  className="absolute w-full border-t border-[var(--border-light)]"
+                  style={{ top: `${(hour - 8) * 60}px` }}
+                />
+              ))}
+              {/* Random event skeletons */}
+              {dayIndex % 2 === 0 && (
+                <>
+                  <div
+                    className="absolute left-1 right-1 bg-[var(--bg-elevated)] rounded"
+                    style={{ top: '60px', height: '45px' }}
+                  />
+                  <div
+                    className="absolute left-1 right-1 bg-[var(--bg-elevated)] rounded"
+                    style={{ top: '180px', height: '60px' }}
+                  />
+                </>
+              )}
+              {dayIndex % 3 === 1 && (
+                <div
+                  className="absolute left-1 right-1 bg-[var(--bg-elevated)] rounded"
+                  style={{ top: '120px', height: '90px' }}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// Current Time Indicator
+function CurrentTimeIndicator({ timezone }: { timezone: string }) {
+  const [position, setPosition] = useState<number | null>(null);
+
+  useEffect(() => {
+    const updatePosition = () => {
+      const now = new Date();
+      const nowInTimezone = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+      const hour = nowInTimezone.getHours();
+      const minutes = nowInTimezone.getMinutes();
+
+      // Only show if within visible hours (8 AM - 7 PM)
+      if (hour >= 8 && hour < 20) {
+        const pos = (hour - 8) * 60 + minutes;
+        setPosition(pos);
+      } else {
+        setPosition(null);
+      }
+    };
+
+    updatePosition();
+    const interval = setInterval(updatePosition, 60000); // Update every minute
+    return () => clearInterval(interval);
+  }, [timezone]);
+
+  if (position === null) return null;
+
+  return (
+    <div
+      className="absolute left-0 right-0 z-20 pointer-events-none"
+      style={{ top: `${position}px` }}
+      aria-hidden="true"
+    >
+      <div className="flex items-center">
+        <div className="w-2.5 h-2.5 rounded-full bg-red-500 -ml-1" />
+        <div className="flex-1 h-0.5 bg-red-500" />
+      </div>
+    </div>
+  );
+}
+
 export default function CalendarPage() {
   const router = useRouter();
+  const { toast } = useToast();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [weekSchedule, setWeekSchedule] = useState<DaySchedule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
-  const [userTimezone, setUserTimezone] = useState<string>('America/Los_Angeles');
+  const [userTimezone, setUserTimezone] = useState<string>(DEFAULT_TIMEZONE);
+
+  // Popover state
+  const [popoverEvent, setPopoverEvent] = useState<CalendarEvent | null>(null);
+  const [popoverAnchorRect, setPopoverAnchorRect] = useState<DOMRect | null>(null);
+
+  // Conflict detection
+  const [conflictMap, setConflictMap] = useState<Map<string, { eventId: string; conflictingEventIds: string[]; conflictingEvents: CalendarEvent[] }>>(new Map());
 
   // Create event modal state
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newEventForm, setNewEventForm] = useState<NewEventForm>(initialFormState);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // Undo state
+  const { undoableActions, addUndoableAction, removeUndoableAction } = useCalendarUndo();
+
+  // Accessibility: Track focused event for keyboard navigation
+  const [focusedEventIndex, setFocusedEventIndex] = useState<number>(-1);
+  const eventRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   // Initialize user timezone on mount
   useEffect(() => {
@@ -103,72 +243,77 @@ export default function CalendarPage() {
   const weekDays = getWeekDays(currentDate);
 
   // Fetch calendar data
-  useEffect(() => {
-    async function fetchCalendar() {
-      try {
-        setIsLoading(true);
-        setError(null);
+  const fetchCalendar = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
 
-        // Calculate week start/end for the API using timezone-aware dates
-        const startOfWeek = startOfDayInTimezone(
-          new Date(currentDate.toLocaleString('en-US', { timeZone: userTimezone })),
-          userTimezone
-        );
-        startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay()); // Sunday start
+      // Calculate week start/end for the API using timezone-aware dates
+      const startOfWeek = startOfDayInTimezone(
+        new Date(currentDate.toLocaleString('en-US', { timeZone: userTimezone })),
+        userTimezone
+      );
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay()); // Sunday start
 
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 7);
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 7);
 
-        const response = await fetch(
-          `/api/calendar/events?start=${startOfWeek.toISOString()}&end=${endOfWeek.toISOString()}&timezone=${encodeURIComponent(userTimezone)}`
-        );
+      const response = await fetch(
+        `/api/calendar/events?start=${startOfWeek.toISOString()}&end=${endOfWeek.toISOString()}&timezone=${encodeURIComponent(userTimezone)}`
+      );
 
-        if (!response.ok) {
-          if (response.status === 401) {
-            router.push('/login');
-            return;
-          }
-          throw new Error('Failed to fetch calendar');
+      if (!response.ok) {
+        if (response.status === 401) {
+          router.push('/login');
+          return;
         }
+        throw new Error('Failed to fetch calendar');
+      }
 
-        const data = await response.json();
-        const events = data.events || [];
+      const responseData = await response.json();
+      const data = responseData.data ?? responseData;
+      const events = data.events || [];
 
-        // Parse dates and organize by day
-        const parsedEvents: CalendarEvent[] = events.map((event: CalendarEvent) => ({
-          ...event,
-          start: new Date(event.start),
-          end: new Date(event.end),
-        }));
+      // Parse dates and organize by day
+      const parsedEvents: CalendarEvent[] = events.map((event: CalendarEvent) => ({
+        ...event,
+        start: new Date(event.start),
+        end: new Date(event.end),
+      }));
 
-        // Group events by day using date string comparison
-        const scheduleByDay: DaySchedule[] = weekDays.map((day) => {
-          const dayDateStr = getDayDateString(day);
-          const dayEvents = parsedEvents.filter((event) => {
-            const eventDateStr = getEventDateString(event, userTimezone);
-            return eventDateStr === dayDateStr;
-          });
+      // Detect conflicts
+      const conflicts = detectConflicts(parsedEvents);
+      setConflictMap(conflicts);
 
-          return {
-            date: day,
-            timezone: userTimezone,
-            events: dayEvents,
-            availableSlots: [],
-            stats: { meetingMinutes: 0, focusMinutes: 0, availableMinutes: 0 },
-          };
+      // Group events by day using date string comparison
+      const currentWeekDays = getWeekDays(currentDate);
+      const scheduleByDay: DaySchedule[] = currentWeekDays.map((day) => {
+        const dayDateStr = getDayDateString(day);
+        const dayEvents = parsedEvents.filter((event) => {
+          const eventDateStr = getEventDateString(event, userTimezone);
+          return eventDateStr === dayDateStr;
         });
 
-        setWeekSchedule(scheduleByDay);
-      } catch (err) {
-        console.error('Failed to fetch calendar:', err);
-        setError('Unable to load calendar. Please try again.');
-      } finally {
-        setIsLoading(false);
-      }
-    }
+        return {
+          date: day,
+          timezone: userTimezone,
+          events: dayEvents,
+          availableSlots: [],
+          stats: { meetingMinutes: 0, focusMinutes: 0, availableMinutes: 0 },
+        };
+      });
 
-    fetchCalendar();
+      setWeekSchedule(scheduleByDay);
+    } catch (err) {
+      setError('Unable to load calendar. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
   }, [currentDate, router, userTimezone]);
+
+  useEffect(() => {
+    fetchCalendar();
+  }, [fetchCalendar]);
 
   // Navigation handlers
   const goToPreviousWeek = () => {
@@ -252,57 +397,89 @@ export default function CalendarPage() {
           router.push('/login');
           return;
         }
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to create event');
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || errorData.error || 'Failed to create event');
       }
+
+      const responseData = await response.json();
+      const createdEvent = responseData.data ?? responseData;
+
+      // Add to undo queue
+      addUndoableAction(
+        createdEvent.id,
+        { eventId: createdEvent.id, googleEventId: createdEvent.id },
+        `Created "${newEventForm.title.trim()}"`
+      );
+
+      // Show success toast
+      toast.success(`Event "${newEventForm.title.trim()}" created`);
 
       // Success - close modal and refresh calendar
       setShowCreateModal(false);
       setNewEventForm(initialFormState);
 
-      // Refresh the calendar to show the new event
-      setIsLoading(true);
-      const startOfWeek = startOfDayInTimezone(
-        new Date(currentDate.toLocaleString('en-US', { timeZone: userTimezone })),
-        userTimezone
-      );
-      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
-      const endOfWeek = new Date(startOfWeek);
-      endOfWeek.setDate(startOfWeek.getDate() + 7);
-
-      const refreshResponse = await fetch(
-        `/api/calendar/events?start=${startOfWeek.toISOString()}&end=${endOfWeek.toISOString()}&timezone=${encodeURIComponent(userTimezone)}`
-      );
-      if (refreshResponse.ok) {
-        const data = await refreshResponse.json();
-        const events = data.events || [];
-        const parsedEvents: CalendarEvent[] = events.map((event: CalendarEvent) => ({
-          ...event,
-          start: new Date(event.start),
-          end: new Date(event.end),
-        }));
-        const scheduleByDay: DaySchedule[] = weekDays.map((day) => {
-          const dayDateStr = getDayDateString(day);
-          const dayEvents = parsedEvents.filter((event) => {
-            const eventDateStr = getEventDateString(event, userTimezone);
-            return eventDateStr === dayDateStr;
-          });
-          return {
-            date: day,
-            timezone: userTimezone,
-            events: dayEvents,
-            availableSlots: [],
-            stats: { meetingMinutes: 0, focusMinutes: 0, availableMinutes: 0 },
-          };
-        });
-        setWeekSchedule(scheduleByDay);
-      }
-      setIsLoading(false);
+      // Refresh the calendar
+      await fetchCalendar();
     } catch (err) {
-      console.error('Failed to create event:', err);
       setCreateError(err instanceof Error ? err.message : 'Failed to create event');
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  // Handle event click for popover
+  const handleEventClick = (event: CalendarEvent, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setPopoverAnchorRect(rect);
+    setPopoverEvent(event);
+  };
+
+  // Handle delete event
+  const handleDeleteEvent = async (event: CalendarEvent) => {
+    setPopoverEvent(null);
+    setPopoverAnchorRect(null);
+
+    try {
+      const response = await fetch(`/api/calendar/events?eventId=${encodeURIComponent(event.id)}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          router.push('/login');
+          return;
+        }
+        const data = await response.json();
+        throw new Error(data.error?.message || data.error || 'Failed to delete event');
+      }
+
+      toast.success(`Event "${event.title}" deleted`);
+      await fetchCalendar();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete event');
+    }
+  };
+
+  // Handle undo
+  const handleUndo = async (actionId: string) => {
+    const action = undoableActions.find(a => a.id === actionId);
+    if (!action) return;
+
+    try {
+      const response = await fetch(`/api/calendar/events?eventId=${encodeURIComponent(action.data.eventId)}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to undo');
+      }
+
+      removeUndoableAction(actionId);
+      toast.info('Event creation undone');
+      await fetchCalendar();
+    } catch (err) {
+      toast.error('Failed to undo action');
     }
   };
 
@@ -345,7 +522,6 @@ export default function CalendarPage() {
       }
 
       const eventStart = new Date(event.start).getTime();
-      const eventEnd = new Date(event.end).getTime();
 
       // Find a column where this event fits (no overlap)
       let placed = false;
@@ -406,39 +582,104 @@ export default function CalendarPage() {
     );
   };
 
-  // Loading state
-  if (isLoading) {
-    return (
-      <MainCanvas
-        title="Calendar"
-        subtitle={currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-      >
-        <Card padding="none" className="overflow-hidden">
-          <div className="animate-pulse">
-            <div className="h-16 bg-[var(--bg-tertiary)] border-b border-[var(--border-light)]" />
-            <div className="h-[720px] bg-[var(--bg-tertiary)]" />
-          </div>
-        </Card>
-      </MainCanvas>
+  // Check if current week contains today
+  const isCurrentWeek = weekDays.some(day => isToday(day));
+
+  // Get all events flattened for keyboard navigation
+  const getAllEvents = useCallback((): CalendarEvent[] => {
+    return weekSchedule.flatMap(day => day.events).sort((a, b) =>
+      new Date(a.start).getTime() - new Date(b.start).getTime()
     );
-  }
+  }, [weekSchedule]);
+
+  // Handle keyboard navigation for events
+  const handleCalendarKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const allEvents = getAllEvents();
+    if (allEvents.length === 0) return;
+
+    let newIndex = focusedEventIndex;
+
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'ArrowRight':
+        e.preventDefault();
+        newIndex = focusedEventIndex < allEvents.length - 1 ? focusedEventIndex + 1 : 0;
+        break;
+      case 'ArrowUp':
+      case 'ArrowLeft':
+        e.preventDefault();
+        newIndex = focusedEventIndex > 0 ? focusedEventIndex - 1 : allEvents.length - 1;
+        break;
+      case 'Home':
+        e.preventDefault();
+        newIndex = 0;
+        break;
+      case 'End':
+        e.preventDefault();
+        newIndex = allEvents.length - 1;
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault();
+        if (focusedEventIndex >= 0 && focusedEventIndex < allEvents.length) {
+          const event = allEvents[focusedEventIndex];
+          const el = eventRefs.current.get(event.id);
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            setPopoverAnchorRect(rect);
+            setPopoverEvent(event);
+          }
+        }
+        return;
+      default:
+        return;
+    }
+
+    setFocusedEventIndex(newIndex);
+    const eventId = allEvents[newIndex]?.id;
+    if (eventId) {
+      eventRefs.current.get(eventId)?.focus();
+    }
+  }, [focusedEventIndex, getAllEvents]);
+
+  // Set event ref for keyboard navigation
+  const setEventRef = useCallback((id: string, el: HTMLButtonElement | null) => {
+    if (el) {
+      eventRefs.current.set(id, el);
+    } else {
+      eventRefs.current.delete(id);
+    }
+  }, []);
 
   // Error state
-  if (error) {
+  if (error && !isLoading) {
     return (
       <MainCanvas
         title="Calendar"
-        subtitle={currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+        subtitle={formatWeekRange(weekDays)}
       >
         <Card padding="lg">
-          <div className="text-center py-8">
-            <p className="text-[var(--text-secondary)] mb-4">{error}</p>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-[var(--accent-primary)] text-[var(--bg-primary)] rounded-lg"
+          <div className="text-center py-12">
+            <svg
+              className="w-12 h-12 mx-auto text-[var(--text-tertiary)] mb-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
             >
-              Try again
-            </button>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
+              />
+            </svg>
+            <p className="text-[var(--text-secondary)] mb-4">{error}</p>
+            <Button variant="primary" onClick={fetchCalendar}>
+              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Try Again
+            </Button>
           </div>
         </Card>
       </MainCanvas>
@@ -448,394 +689,419 @@ export default function CalendarPage() {
   return (
     <MainCanvas
       title="Calendar"
-      subtitle={currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+      subtitle={formatWeekRange(weekDays)}
       headerAction={
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <Button variant="primary" size="sm" onClick={() => openCreateModal()}>
             <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
             New Event
           </Button>
-          <div className="w-px bg-[var(--border-light)]" />
-          <Button variant="secondary" size="sm" onClick={goToPreviousWeek}>
-            <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <div className="w-px h-6 bg-[var(--border-light)]" />
+          <Button variant="secondary" size="sm" onClick={goToPreviousWeek} aria-label="Previous week">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
             </svg>
-            Prev
           </Button>
-          <Button variant="secondary" size="sm" onClick={goToToday}>
+          <Button
+            variant={isCurrentWeek ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={goToToday}
+            className={isCurrentWeek ? 'opacity-60 cursor-default' : ''}
+            disabled={isCurrentWeek}
+          >
             Today
           </Button>
-          <Button variant="secondary" size="sm" onClick={goToNextWeek}>
-            Next
-            <svg className="w-4 h-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <Button variant="secondary" size="sm" onClick={goToNextWeek} aria-label="Next week">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
             </svg>
           </Button>
         </div>
       }
     >
-      <Card padding="none" className="overflow-hidden">
-        {/* Header */}
-        <div className="grid grid-cols-8 border-b border-[var(--border-medium)]">
-          <div className="p-3 text-xs text-[var(--text-tertiary)]" />
-          {weekDays.map((day) => (
+      {/* Undo Toast */}
+      {undoableActions.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40">
+          {undoableActions.slice(0, 1).map((action) => (
             <div
-              key={day.toISOString()}
-              className={`p-3 text-center border-l border-[var(--border-medium)] ${
-                isToday(day) ? 'bg-blue-900/30' : ''
-              }`}
+              key={action.id}
+              className="flex items-center gap-3 px-4 py-2.5 bg-[var(--bg-elevated)] border border-[var(--border-medium)] rounded-lg shadow-lg animate-in slide-in-from-bottom-2"
+              role="alert"
             >
-              <p className={`text-xs uppercase font-medium ${
-                isToday(day) ? 'text-blue-400' : 'text-[var(--text-secondary)]'
-              }`}>
-                {day.toLocaleDateString('en-US', { weekday: 'short' })}
-              </p>
-              <p className={`text-xl font-bold ${
-                isToday(day) ? 'text-blue-400' : 'text-[var(--text-primary)]'
-              }`}>
-                {day.getDate()}
-              </p>
+              <span className="text-sm text-[var(--text-secondary)]">{action.description}</span>
+              <Button variant="ghost" size="sm" onClick={() => handleUndo(action.id)}>
+                Undo
+              </Button>
             </div>
           ))}
         </div>
+      )}
 
-        {/* Time Grid */}
-        <div className="grid grid-cols-8 relative" style={{ height: `${hours.length * 60}px` }}>
-          {/* Time labels */}
-          <div className="relative">
-            {hours.map((hour) => (
-              <div
-                key={hour}
-                className="absolute w-full text-right pr-3 text-xs text-[var(--text-tertiary)]"
-                style={{ top: `${(hour - 8) * 60 - 6}px` }}
-              >
-                {hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`}
-              </div>
-            ))}
+      {isLoading ? (
+        <CalendarSkeleton />
+      ) : (
+        <Card padding="none" className="overflow-hidden" aria-label="Weekly calendar view">
+          {/* Header */}
+          <div className="grid grid-cols-8 border-b border-[var(--border-medium)]" role="row">
+            <div className="p-3 text-xs text-[var(--text-tertiary)]" role="columnheader">
+              <VisuallyHidden>Time</VisuallyHidden>
+            </div>
+            {weekDays.map((day) => {
+              const dayEvents = getEventsForDay(day);
+              const hasEvents = dayEvents.length > 0;
+              return (
+                <div
+                  key={day.toISOString()}
+                  role="columnheader"
+                  aria-current={isToday(day) ? 'date' : undefined}
+                  className={`p-3 text-center border-l border-[var(--border-medium)] ${
+                    isToday(day) ? 'bg-blue-900/30' : ''
+                  }`}
+                >
+                  <p className={`text-xs uppercase font-medium ${
+                    isToday(day) ? 'text-blue-400' : 'text-[var(--text-secondary)]'
+                  }`}>
+                    {day.toLocaleDateString('en-US', { weekday: 'short' })}
+                  </p>
+                  <p className={`text-xl font-bold ${
+                    isToday(day) ? 'text-blue-400' : 'text-[var(--text-primary)]'
+                  }`}>
+                    {day.getDate()}
+                  </p>
+                  {!hasEvents && (
+                    <p className="text-[10px] text-[var(--text-tertiary)] mt-1">No events</p>
+                  )}
+                  <VisuallyHidden>
+                    {day.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                    {isToday(day) && ' (Today)'}
+                  </VisuallyHidden>
+                </div>
+              );
+            })}
           </div>
 
-          {/* Day columns */}
-          {weekDays.map((day) => {
-            const dayEvents = getEventsForDay(day);
-            const eventsWithOverlap = getEventsWithOverlapInfo(dayEvents);
-            return (
-              <div
-                key={day.toISOString()}
-                className={`relative border-l border-[var(--border-medium)] ${
-                  isToday(day) ? 'bg-blue-900/20' : ''
-                }`}
-              >
-                {/* Hour lines */}
-                {hours.map((hour) => (
-                  <div
-                    key={hour}
-                    className="absolute w-full border-t border-[var(--border-light)]"
-                    style={{ top: `${(hour - 8) * 60}px` }}
-                  />
-                ))}
+          {/* Time Grid */}
+          <div
+            className="grid grid-cols-8 relative"
+            style={{ height: `${hours.length * 60}px` }}
+            role="grid"
+            aria-label={`Calendar events for week of ${weekDays[0]?.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`}
+            onKeyDown={handleCalendarKeyDown}
+          >
+            {/* Time labels */}
+            <div className="relative" role="rowheader">
+              {hours.map((hour) => (
+                <div
+                  key={hour}
+                  className="absolute w-full text-right pr-3 text-xs text-[var(--text-tertiary)]"
+                  style={{ top: `${(hour - 8) * 60 - 6}px` }}
+                  aria-hidden="true"
+                >
+                  {hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`}
+                </div>
+              ))}
+            </div>
 
-                {/* Events */}
-                {eventsWithOverlap.map((event) => {
-                  const colors = categoryColors[event.category];
+            {/* Day columns */}
+            {weekDays.map((day) => {
+              const dayEvents = getEventsForDay(day);
+              const eventsWithOverlap = getEventsWithOverlapInfo(dayEvents);
+              const dayLabel = day.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+              const isTodayColumn = isToday(day);
 
-                  // Handle all-day events differently
-                  if (event.isAllDay) {
-                    return (
+              return (
+                <div
+                  key={day.toISOString()}
+                  role="gridcell"
+                  aria-label={`${dayLabel}, ${eventsWithOverlap.length} events`}
+                  className={`relative border-l border-[var(--border-medium)] ${
+                    isTodayColumn ? 'bg-blue-900/10' : ''
+                  }`}
+                >
+                  {/* Hour lines with subtle half-hour grid */}
+                  {hours.map((hour) => (
+                    <div key={hour}>
                       <div
-                        key={event.id}
-                        className={`absolute left-1 right-1 rounded p-1.5 border-l-4 cursor-pointer hover:brightness-110 transition-all top-0 shadow-sm ${colors.bg} ${colors.border}`}
-                        style={{
-                          height: '26px',
-                          marginBottom: '2px',
-                          zIndex: 10
-                        }}
-                        title={`${event.title} (All day)`}
-                        onClick={() => setSelectedEvent(event)}
-                      >
-                        <p className={`text-xs font-semibold truncate ${colors.text}`}>
-                          {event.title}
-                        </p>
-                      </div>
-                    );
-                  }
-
-                  // Regular timed events with overlap handling
-                  const { top, height } = getEventPosition(event);
-                  const width = event.totalColumns > 1 ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)';
-                  const left = event.totalColumns > 1 ? `calc(${(event.column / event.totalColumns) * 100}% + 2px)` : '4px';
-
-                  return (
-                    <div
-                      key={event.id}
-                      className={`absolute rounded p-1.5 border-l-4 cursor-pointer hover:brightness-110 transition-all shadow-sm overflow-hidden ${colors.bg} ${colors.border}`}
-                      style={{
-                        top: `${top}px`,
-                        height: `${height}px`,
-                        minHeight: '24px',
-                        width,
-                        left,
-                        zIndex: event.column + 1
-                      }}
-                      title={`${event.title}\n${formatTime(event.start, userTimezone)} - ${formatTime(event.end, userTimezone)}`}
-                      onClick={() => setSelectedEvent(event)}
-                    >
-                      <p className={`text-xs font-semibold truncate leading-tight ${colors.text}`}>
-                        {event.title}
-                      </p>
-                      {height > 36 && (
-                        <p className={`text-[10px] truncate mt-0.5 ${colors.textSecondary}`}>
-                          {formatTime(event.start, userTimezone)}
-                        </p>
-                      )}
+                        className="absolute w-full border-t border-[var(--border-light)]"
+                        style={{ top: `${(hour - 8) * 60}px` }}
+                        aria-hidden="true"
+                      />
+                      {/* Half-hour line (more subtle) */}
+                      <div
+                        className="absolute w-full border-t border-[var(--border-light)] opacity-30"
+                        style={{ top: `${(hour - 8) * 60 + 30}px` }}
+                        aria-hidden="true"
+                      />
                     </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
-      </Card>
+                  ))}
+
+                  {/* Current time indicator */}
+                  {isTodayColumn && <CurrentTimeIndicator timezone={userTimezone} />}
+
+                  {/* Events */}
+                  {eventsWithOverlap.map((event) => {
+                    const colors = categoryColors[event.category];
+                    const hasConflict = conflictMap.has(event.id);
+                    const conflictDetails = conflictMap.get(event.id);
+                    const conflictMessage = conflictDetails
+                      ? getConflictMessage(event, conflictDetails.conflictingEvents)
+                      : '';
+                    const eventTimeLabel = event.isAllDay
+                      ? 'All day'
+                      : `${formatTime(event.start, userTimezone)} to ${formatTime(event.end, userTimezone)}`;
+                    const eventLabel = `${event.title}, ${event.category} event, ${eventTimeLabel}${hasConflict ? `, ${conflictMessage}` : ''}`;
+
+                    // Handle all-day events differently
+                    if (event.isAllDay) {
+                      return (
+                        <button
+                          key={event.id}
+                          ref={(el) => setEventRef(event.id, el)}
+                          type="button"
+                          className={`absolute left-1 right-1 rounded p-1.5 border-l-4 cursor-pointer transition-all top-0 shadow-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 ${colors.bg} ${colors.border} ${colors.hoverBg}`}
+                          style={{
+                            height: '26px',
+                            marginBottom: '2px',
+                            zIndex: 10
+                          }}
+                          aria-label={eventLabel}
+                          onClick={(e) => handleEventClick(event, e)}
+                          onFocus={() => {
+                            const allEvents = getAllEvents();
+                            const idx = allEvents.findIndex(ev => ev.id === event.id);
+                            setFocusedEventIndex(idx);
+                          }}
+                        >
+                          <p className={`text-xs font-semibold truncate ${colors.text}`} aria-hidden="true">
+                            {event.title}
+                          </p>
+                        </button>
+                      );
+                    }
+
+                    // Regular timed events with overlap handling
+                    const { top, height } = getEventPosition(event);
+                    const width = event.totalColumns > 1 ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)';
+                    const left = event.totalColumns > 1 ? `calc(${(event.column / event.totalColumns) * 100}% + 2px)` : '4px';
+
+                    return (
+                      <button
+                        key={event.id}
+                        ref={(el) => setEventRef(event.id, el)}
+                        type="button"
+                        className={`absolute rounded p-1.5 border-l-4 cursor-pointer transition-all shadow-sm overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 ${colors.bg} ${colors.border} ${colors.hoverBg} ${
+                          hasConflict ? 'ring-2 ring-amber-400/60' : ''
+                        }`}
+                        style={{
+                          top: `${top}px`,
+                          height: `${height}px`,
+                          minHeight: '24px',
+                          width,
+                          left,
+                          zIndex: event.column + 1
+                        }}
+                        aria-label={eventLabel}
+                        onClick={(e) => handleEventClick(event, e)}
+                        onFocus={() => {
+                          const allEvents = getAllEvents();
+                          const idx = allEvents.findIndex(ev => ev.id === event.id);
+                          setFocusedEventIndex(idx);
+                        }}
+                      >
+                        <div className="flex items-start gap-1">
+                          <p className={`text-xs font-semibold truncate leading-tight flex-1 ${colors.text}`} aria-hidden="true">
+                            {event.title}
+                          </p>
+                          {hasConflict && (
+                            <svg
+                              className="w-3 h-3 text-amber-300 flex-shrink-0"
+                              fill="currentColor"
+                              viewBox="0 0 20 20"
+                              aria-hidden="true"
+                            >
+                              <path
+                                fillRule="evenodd"
+                                d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                                clipRule="evenodd"
+                              />
+                            </svg>
+                          )}
+                        </div>
+                        {height > 36 && (
+                          <p className={`text-[10px] truncate mt-0.5 ${colors.textSecondary}`} aria-hidden="true">
+                            {formatTime(event.start, userTimezone)}
+                          </p>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* Legend */}
-      <div className="mt-4 flex gap-6 justify-center">
+      <div className="mt-4 flex gap-6 justify-center flex-wrap">
         {Object.entries(categoryColors).map(([category, colors]) => (
           <div key={category} className="flex items-center gap-2">
-            <div className={`w-4 h-4 rounded border-l-4 ${colors.bg} ${colors.border}`} />
+            <div className={`w-4 h-4 rounded border-l-4 ${colors.bg} ${colors.border}`} aria-hidden="true" />
             <span className="text-sm text-[var(--text-secondary)] capitalize">{category}</span>
           </div>
         ))}
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-4 rounded ring-2 ring-amber-400/60 bg-[var(--bg-tertiary)]" aria-hidden="true" />
+          <span className="text-sm text-[var(--text-secondary)]">Conflict</span>
+        </div>
       </div>
 
-      {/* Event Details Card */}
-      {selectedEvent && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedEvent(null)}>
-          <Card className="max-w-md w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className={`w-3 h-3 rounded ${categoryColors[selectedEvent.category].bg} border-l-2 ${categoryColors[selectedEvent.category].border}`} />
-                <h3 className="text-lg font-semibold text-[var(--text-primary)]">
-                  {selectedEvent.title}
-                </h3>
-              </div>
-              <button
-                onClick={() => setSelectedEvent(null)}
-                className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {/* Time */}
-              <div className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <div>
-                  <p className="text-sm text-[var(--text-primary)]">
-                    {selectedEvent.start.toLocaleDateString('en-US', {
-                      weekday: 'long',
-                      month: 'long',
-                      day: 'numeric',
-                      timeZone: userTimezone
-                    })}
-                  </p>
-                  <p className="text-sm text-[var(--text-secondary)]">
-                    {selectedEvent.isAllDay
-                      ? 'All day'
-                      : `${formatTime(selectedEvent.start, userTimezone)} - ${formatTime(selectedEvent.end, userTimezone)}`
-                    }
-                  </p>
-                </div>
-              </div>
-
-              {/* Location */}
-              {selectedEvent.location && (
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                  <p className="text-sm text-[var(--text-primary)]">{selectedEvent.location}</p>
-                </div>
-              )}
-
-              {/* Meeting Link */}
-              {selectedEvent.meetingLink && (
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                  </svg>
-                  <a
-                    href={selectedEvent.meetingLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-[var(--accent-primary)] hover:underline"
-                  >
-                    Join Meeting
-                  </a>
-                </div>
-              )}
-
-              {/* Description */}
-              {selectedEvent.description && (
-                <div className="pt-2 border-t border-[var(--border-light)]">
-                  <h4 className="text-sm font-medium text-[var(--text-primary)] mb-2">Description</h4>
-                  <p className="text-sm text-[var(--text-secondary)] whitespace-pre-wrap">
-                    {selectedEvent.description}
-                  </p>
-                </div>
-              )}
-
-              {/* Attendees */}
-              {selectedEvent.attendees.length > 0 && (
-                <div className="pt-2 border-t border-[var(--border-light)]">
-                  <h4 className="text-sm font-medium text-[var(--text-primary)] mb-2">
-                    Attendees ({selectedEvent.attendees.length})
-                  </h4>
-                  <div className="space-y-1">
-                    {selectedEvent.attendees.map((attendee, index) => (
-                      <div key={index} className="flex items-center justify-between">
-                        <span className="text-sm text-[var(--text-primary)]">
-                          {attendee.name || attendee.email}
-                        </span>
-                        <span className={`text-xs px-2 py-1 rounded-full capitalize ${
-                          attendee.responseStatus === 'accepted' ? 'bg-green-100 text-green-700' :
-                          attendee.responseStatus === 'declined' ? 'bg-red-100 text-red-700' :
-                          attendee.responseStatus === 'tentative' ? 'bg-yellow-100 text-yellow-700' :
-                          'bg-gray-100 text-gray-600'
-                        }`}>
-                          {attendee.responseStatus}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Agenda indicator */}
-              {selectedEvent.hasAgenda && (
-                <div className="pt-2 border-t border-[var(--border-light)]">
-                  <div className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-[var(--text-tertiary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                    </svg>
-                    <span className="text-sm text-[var(--text-secondary)]">Has agenda</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </Card>
-        </div>
+      {/* Event Popover */}
+      {popoverEvent && popoverAnchorRect && (
+        <EventPopover
+          event={popoverEvent}
+          anchorRect={popoverAnchorRect}
+          timezone={userTimezone}
+          onClose={() => {
+            setPopoverEvent(null);
+            setPopoverAnchorRect(null);
+          }}
+          onDelete={handleDeleteEvent}
+          hasConflict={conflictMap.has(popoverEvent.id)}
+          conflictMessage={
+            conflictMap.has(popoverEvent.id)
+              ? getConflictMessage(popoverEvent, conflictMap.get(popoverEvent.id)!.conflictingEvents)
+              : ''
+          }
+        />
       )}
 
       {/* Create Event Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowCreateModal(false)}>
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          onClick={() => setShowCreateModal(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-event-title"
+        >
           <Card className="max-w-md w-full" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-[var(--text-primary)]">New Event</h3>
+              <h2 id="create-event-title" className="text-lg font-semibold text-[var(--text-primary)]">New Event</h2>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+                className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-medium)] rounded"
+                aria-label="Close create event dialog"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
-            <form onSubmit={handleCreateEvent} className="space-y-4">
+            <form onSubmit={handleCreateEvent} className="space-y-4" aria-describedby={createError ? 'create-event-error' : undefined}>
               {/* Title */}
               <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
-                  Title <span className="text-red-500">*</span>
+                <label htmlFor="event-title" className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                  Title <span className="text-red-500" aria-hidden="true">*</span>
                 </label>
                 <input
+                  id="event-title"
                   type="text"
                   value={newEventForm.title}
                   onChange={(e) => handleFormChange('title', e.target.value)}
                   placeholder="Meeting with..."
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)]"
                   autoFocus
+                  required
+                  aria-required="true"
                 />
               </div>
 
               {/* Date */}
               <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
-                  Date <span className="text-red-500">*</span>
+                <label htmlFor="event-date" className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                  Date <span className="text-red-500" aria-hidden="true">*</span>
                 </label>
                 <input
+                  id="event-date"
                   type="date"
                   value={newEventForm.date}
                   onChange={(e) => handleFormChange('date', e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)]"
+                  required
+                  aria-required="true"
                 />
               </div>
 
               {/* Time */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
-                    Start Time <span className="text-red-500">*</span>
+                  <label htmlFor="event-start-time" className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                    Start Time <span className="text-red-500" aria-hidden="true">*</span>
                   </label>
                   <input
+                    id="event-start-time"
                     type="time"
                     value={newEventForm.startTime}
                     onChange={(e) => handleFormChange('startTime', e.target.value)}
-                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)]"
+                    required
+                    aria-required="true"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
-                    End Time <span className="text-red-500">*</span>
+                  <label htmlFor="event-end-time" className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                    End Time <span className="text-red-500" aria-hidden="true">*</span>
                   </label>
                   <input
+                    id="event-end-time"
                     type="time"
                     value={newEventForm.endTime}
                     onChange={(e) => handleFormChange('endTime', e.target.value)}
-                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)]"
+                    required
+                    aria-required="true"
                   />
                 </div>
               </div>
 
               {/* Location */}
               <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                <label htmlFor="event-location" className="block text-sm font-medium text-[var(--text-primary)] mb-1">
                   Location
                 </label>
                 <input
+                  id="event-location"
                   type="text"
                   value={newEventForm.location}
                   onChange={(e) => handleFormChange('location', e.target.value)}
                   placeholder="Conference Room A or Zoom link"
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)]"
                 />
               </div>
 
               {/* Description */}
               <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                <label htmlFor="event-description" className="block text-sm font-medium text-[var(--text-primary)] mb-1">
                   Description
                 </label>
                 <textarea
+                  id="event-description"
                   value={newEventForm.description}
                   onChange={(e) => handleFormChange('description', e.target.value)}
                   placeholder="Add details about this event..."
                   rows={3}
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent-primary)] resize-none"
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--border-medium)] resize-none"
                 />
               </div>
 
               {/* Error message */}
               {createError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-sm text-red-600">{createError}</p>
+                <div id="create-event-error" className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg" role="alert">
+                  <p className="text-sm text-red-400">{createError}</p>
                 </div>
               )}
 

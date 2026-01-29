@@ -1,13 +1,21 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSession, signOut } from 'next-auth/react';
 import { MainCanvas } from '@/components/layout';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { ProtectedTimeEditor } from '@/components/settings';
-import { getAvailableTimezones } from '@/lib/user-preferences';
+import {
+  ProtectedTimeEditor,
+  WorkingHoursEditor,
+  AccountSection,
+  DangerZoneSection,
+  SettingsNav,
+  SettingsIcons
+} from '@/components/settings';
+import { useToast } from '@/hooks/useToast';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface UserPreferences {
   timezone: string;
@@ -50,13 +58,48 @@ const DURATION_OPTIONS = [
   { value: 120, label: '2 hours' },
 ];
 
+const NAV_ITEMS = [
+  { id: 'general', label: 'General', icon: SettingsIcons.general },
+  { id: 'working-hours', label: 'Working Hours', icon: SettingsIcons.workingHours },
+  { id: 'protected-time', label: 'Protected Time', icon: SettingsIcons.protectedTime },
+  { id: 'account', label: 'Account', icon: SettingsIcons.account },
+  { id: 'danger', label: 'Danger Zone', icon: SettingsIcons.danger, danger: true },
+];
+
 export default function SettingsPage() {
   const router = useRouter();
+  const { data: session } = useSession();
+  const { toast } = useToast();
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
+  const [originalPreferences, setOriginalPreferences] = useState<UserPreferences | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState('general');
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  // Refs for section scrolling
+  const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  // Track unsaved changes
+  useEffect(() => {
+    if (preferences && originalPreferences) {
+      const changed = JSON.stringify(preferences) !== JSON.stringify(originalPreferences);
+      setHasUnsavedChanges(changed);
+    }
+  }, [preferences, originalPreferences]);
+
+  // Warn before leaving with unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   // Fetch preferences on mount
   useEffect(() => {
@@ -73,25 +116,24 @@ export default function SettingsPage() {
           throw new Error('Failed to fetch preferences');
         }
 
-        const data = await response.json();
+        const responseData = await response.json();
+        const data = responseData.data ?? responseData;
         setPreferences(data);
+        setOriginalPreferences(data);
       } catch (err) {
-        console.error('Failed to fetch preferences:', err);
-        setError('Unable to load preferences. Please try again.');
+        toast.error('Unable to load preferences. Please try again.');
       } finally {
         setIsLoading(false);
       }
     }
 
     fetchPreferences();
-  }, [router]);
+  }, [router, toast]);
 
-  const handleSave = useCallback(async (updates: Partial<UserPreferences>) => {
+  const handleSave = useCallback(async (updates: Partial<UserPreferences>, showToast = true) => {
     if (!preferences) return;
 
     setIsSaving(true);
-    setError(null);
-    setSuccessMessage(null);
 
     try {
       const response = await fetch('/api/user/preferences', {
@@ -101,23 +143,24 @@ export default function SettingsPage() {
       });
 
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to save preferences');
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || errorData.error || 'Failed to save preferences');
       }
 
-      const updatedPrefs = await response.json();
+      const responseData = await response.json();
+      const updatedPrefs = responseData.data ?? responseData;
       setPreferences(updatedPrefs);
-      setSuccessMessage('Preferences saved successfully');
+      setOriginalPreferences(updatedPrefs);
 
-      // Clear success message after 3 seconds
-      setTimeout(() => setSuccessMessage(null), 3000);
+      if (showToast) {
+        toast.success('Settings saved');
+      }
     } catch (err) {
-      console.error('Failed to save preferences:', err);
-      setError(err instanceof Error ? err.message : 'Failed to save preferences');
+      toast.error(err instanceof Error ? err.message : 'Failed to save preferences');
     } finally {
       setIsSaving(false);
     }
-  }, [preferences]);
+  }, [preferences, toast]);
 
   const handleTimezoneChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     if (!preferences) return;
@@ -126,10 +169,9 @@ export default function SettingsPage() {
     handleSave({ timezone: newTimezone });
   };
 
-  const handleWorkingHoursChange = (field: 'start' | 'end', value: string) => {
+  const handleWorkingHoursChange = (workingHours: UserPreferences['workingHours']) => {
     if (!preferences) return;
-    const newWorkingHours = { ...preferences.workingHours, [field]: value };
-    setPreferences({ ...preferences, workingHours: newWorkingHours });
+    setPreferences({ ...preferences, workingHours });
   };
 
   const handleWorkingHoursSave = () => {
@@ -147,33 +189,81 @@ export default function SettingsPage() {
   const handleProtectedTimesChange = (times: UserPreferences['protectedTimes']) => {
     if (!preferences) return;
     setPreferences({ ...preferences, protectedTimes: times });
-    handleSave({ protectedTimes: times });
+    handleSave({ protectedTimes: times }, false);
+  };
+
+  const handleDisconnect = async () => {
+    await signOut({ callbackUrl: '/login' });
+  };
+
+  const handleDeleteData = async () => {
+    // In a real app, this would call an API to delete user data
+    toast.info('Data deletion requested. This would delete all your data in production.');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  };
+
+  const handleExportData = async () => {
+    // In a real app, this would call an API to export user data
+    const dataToExport = {
+      preferences,
+      exportedAt: new Date().toISOString(),
+    };
+
+    const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tenex-data-export.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast.success('Data exported successfully');
+  };
+
+  const scrollToSection = (sectionId: string) => {
+    setActiveSection(sectionId);
+    const ref = sectionRefs.current[sectionId];
+    if (ref) {
+      ref.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   };
 
   // Loading state
   if (isLoading) {
     return (
       <MainCanvas>
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-5xl mx-auto">
           <div className="animate-pulse space-y-6">
             <div className="h-12 bg-[var(--bg-tertiary)] rounded-xl w-48" />
-            <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
-            <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
-            <div className="h-64 bg-[var(--bg-tertiary)] rounded-xl" />
+            <div className="flex gap-8">
+              <div className="w-56 space-y-2">
+                <div className="h-10 bg-[var(--bg-tertiary)] rounded-lg" />
+                <div className="h-10 bg-[var(--bg-tertiary)] rounded-lg" />
+                <div className="h-10 bg-[var(--bg-tertiary)] rounded-lg" />
+                <div className="h-10 bg-[var(--bg-tertiary)] rounded-lg" />
+              </div>
+              <div className="flex-1 space-y-6">
+                <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
+                <div className="h-48 bg-[var(--bg-tertiary)] rounded-xl" />
+                <div className="h-64 bg-[var(--bg-tertiary)] rounded-xl" />
+              </div>
+            </div>
           </div>
         </div>
       </MainCanvas>
     );
   }
 
-  // Error state
-  if (error && !preferences) {
+  // Error state - no preferences loaded
+  if (!preferences) {
     return (
       <MainCanvas>
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-5xl mx-auto">
           <Card padding="lg">
             <div className="text-center py-8">
-              <p className="text-[var(--text-secondary)] mb-4">{error}</p>
+              <p className="text-[var(--text-secondary)] mb-4">Unable to load settings</p>
               <Button onClick={() => window.location.reload()}>
                 Try again
               </Button>
@@ -184,134 +274,179 @@ export default function SettingsPage() {
     );
   }
 
-  if (!preferences) return null;
-
   return (
     <MainCanvas>
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         {/* Page Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Settings</h1>
-          <p className="text-[var(--text-secondary)] mt-1">
-            Configure your calendar preferences and protected times
-          </p>
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Settings</h1>
+            <p className="text-[var(--text-secondary)] mt-1">
+              Configure your calendar preferences and account settings
+            </p>
+          </div>
+
+          {/* Unsaved changes indicator */}
+          <AnimatePresence>
+            {hasUnsavedChanges && (
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-full"
+              >
+                <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+                <span className="text-sm text-amber-400">Unsaved changes</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
-        {/* Status Messages */}
-        {successMessage && (
-          <div className="mb-6 p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
-            <p className="text-green-400 text-sm">{successMessage}</p>
-          </div>
-        )}
-        {error && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
-            <p className="text-red-400 text-sm">{error}</p>
-          </div>
-        )}
-
-        <div className="space-y-6">
-          {/* General Settings */}
-          <Card padding="lg">
-            <CardHeader
-              title="General"
-              subtitle="Basic calendar settings"
-            />
-
-            <div className="space-y-6">
-              {/* Timezone */}
-              <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1.5">
-                  Timezone
-                </label>
-                <select
-                  value={preferences.timezone}
-                  onChange={handleTimezoneChange}
-                  disabled={isSaving}
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-medium)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
-                >
-                  {TIMEZONES.map((tz) => (
-                    <option key={tz.value} value={tz.value}>
-                      {tz.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Default Meeting Duration */}
-              <div>
-                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1.5">
-                  Default Meeting Duration
-                </label>
-                <select
-                  value={preferences.defaultMeetingDuration}
-                  onChange={handleDurationChange}
-                  disabled={isSaving}
-                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-medium)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
-                >
-                  {DURATION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </Card>
-
-          {/* Working Hours */}
-          <Card padding="lg">
-            <CardHeader
-              title="Working Hours"
-              subtitle="Set your typical work schedule"
-            />
-
-            <div className="grid grid-cols-2 gap-4">
-              <Input
-                label="Start Time"
-                type="time"
-                value={preferences.workingHours.start}
-                onChange={(e) => handleWorkingHoursChange('start', e.target.value)}
-                onBlur={handleWorkingHoursSave}
-                disabled={isSaving}
-              />
-              <Input
-                label="End Time"
-                type="time"
-                value={preferences.workingHours.end}
-                onChange={(e) => handleWorkingHoursChange('end', e.target.value)}
-                onBlur={handleWorkingHoursSave}
-                disabled={isSaving}
+        <div className="flex gap-8">
+          {/* Sidebar Navigation */}
+          <aside className="w-56 flex-shrink-0">
+            <div className="sticky top-6">
+              <SettingsNav
+                items={NAV_ITEMS}
+                activeSection={activeSection}
+                onSelect={scrollToSection}
               />
             </div>
+          </aside>
 
-            <p className="mt-4 text-sm text-[var(--text-secondary)]">
-              Meetings will be scheduled within these hours unless specified otherwise.
-            </p>
-          </Card>
+          {/* Main Content */}
+          <main className="flex-1 space-y-8 pb-12">
+            {/* General Settings */}
+            <section
+              ref={(el) => { sectionRefs.current['general'] = el; }}
+              id="general"
+            >
+              <Card padding="lg">
+                <CardHeader
+                  title={
+                    <span className="flex items-center gap-2">
+                      {SettingsIcons.general}
+                      General
+                    </span>
+                  }
+                  subtitle="Basic calendar settings"
+                />
 
-          {/* Protected Times */}
-          <ProtectedTimeEditor
-            protectedTimes={preferences.protectedTimes}
-            onChange={handleProtectedTimesChange}
-            isSaving={isSaving}
-          />
+                <div className="space-y-6">
+                  {/* Timezone */}
+                  <div>
+                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1.5">
+                      Timezone
+                    </label>
+                    <select
+                      value={preferences.timezone}
+                      onChange={handleTimezoneChange}
+                      disabled={isSaving}
+                      className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-medium)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)] transition-colors"
+                    >
+                      {TIMEZONES.map((tz) => (
+                        <option key={tz.value} value={tz.value}>
+                          {tz.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1.5 text-sm text-[var(--text-tertiary)]">
+                      All times will be displayed in this timezone
+                    </p>
+                  </div>
 
-          {/* Info Card */}
-          <Card padding="md" variant="outlined">
-            <div className="flex gap-3">
-              <svg className="w-5 h-5 text-[var(--accent-primary)] flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <div>
-                <p className="text-sm text-[var(--text-secondary)]">
-                  You can also configure protected times via chat. Try saying:
-                </p>
-                <p className="text-sm text-[var(--text-primary)] mt-1 font-medium">
-                  &ldquo;Block my mornings from 6-9am for workouts&rdquo;
-                </p>
+                  {/* Default Meeting Duration */}
+                  <div>
+                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1.5">
+                      Default Meeting Duration
+                    </label>
+                    <select
+                      value={preferences.defaultMeetingDuration}
+                      onChange={handleDurationChange}
+                      disabled={isSaving}
+                      className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-medium)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)] transition-colors"
+                    >
+                      {DURATION_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1.5 text-sm text-[var(--text-tertiary)]">
+                      Used when scheduling new meetings without a specified duration
+                    </p>
+                  </div>
+                </div>
+              </Card>
+            </section>
+
+            {/* Working Hours */}
+            <section
+              ref={(el) => { sectionRefs.current['working-hours'] = el; }}
+              id="working-hours"
+            >
+              <WorkingHoursEditor
+                workingHours={preferences.workingHours}
+                timezone={preferences.timezone}
+                onChange={handleWorkingHoursChange}
+                onSave={handleWorkingHoursSave}
+                isSaving={isSaving}
+              />
+            </section>
+
+            {/* Protected Times */}
+            <section
+              ref={(el) => { sectionRefs.current['protected-time'] = el; }}
+              id="protected-time"
+            >
+              <ProtectedTimeEditor
+                protectedTimes={preferences.protectedTimes}
+                onChange={handleProtectedTimesChange}
+                isSaving={isSaving}
+              />
+            </section>
+
+            {/* Info Card */}
+            <Card padding="md" variant="outlined">
+              <div className="flex gap-3">
+                <svg className="w-5 h-5 text-[var(--accent-primary)] flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    You can also configure protected times via chat. Try saying:
+                  </p>
+                  <p className="text-sm text-[var(--text-primary)] mt-1 font-medium">
+                    &ldquo;Block my mornings from 6-9am for workouts&rdquo;
+                  </p>
+                </div>
               </div>
-            </div>
-          </Card>
+            </Card>
+
+            {/* Account Section */}
+            <section
+              ref={(el) => { sectionRefs.current['account'] = el; }}
+              id="account"
+            >
+              {session?.user && (
+                <AccountSection
+                  user={session.user}
+                  onDisconnect={handleDisconnect}
+                />
+              )}
+            </section>
+
+            {/* Danger Zone */}
+            <section
+              ref={(el) => { sectionRefs.current['danger'] = el; }}
+              id="danger"
+            >
+              <DangerZoneSection
+                onDeleteData={handleDeleteData}
+                onExportData={handleExportData}
+              />
+            </section>
+          </main>
         </div>
       </div>
     </MainCanvas>

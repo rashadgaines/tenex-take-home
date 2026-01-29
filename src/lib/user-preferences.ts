@@ -49,7 +49,6 @@ export async function getUserPreferences(userId: string): Promise<UserPreference
       ...(user.preferences as Partial<UserPreferences>),
     };
   } catch (error) {
-    console.error('Failed to get user preferences:', error);
     return DEFAULT_PREFERENCES;
   }
 }
@@ -74,7 +73,6 @@ export async function updateUserPreferences(
 
     return updatedPrefs;
   } catch (error) {
-    console.error('Failed to update user preferences:', error);
     throw new Error('Failed to update preferences');
   }
 }

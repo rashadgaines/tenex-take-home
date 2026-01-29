@@ -1,49 +1,54 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
-import { generateBatchEmailDrafts } from '@/lib/ai/chat';
+import { generateBatchEmailDrafts } from '@/lib/ai/chat/index';
+import { generateSubjectLine } from '@/lib/email/subject';
 import { BatchDraftEmailRequest, BatchDraftEmailResponse } from '@/types/ai';
+import {
+  successResponse,
+  unauthorizedResponse,
+  validationErrorResponse,
+  internalErrorResponse,
+} from '@/lib/api/responses';
+import { validateRequired, validateEmail } from '@/lib/api/validation';
 
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
 
     if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return unauthorizedResponse();
     }
 
     const body: BatchDraftEmailRequest = await request.json();
 
     // Validate required fields
-    if (!body.recipients || !Array.isArray(body.recipients) || body.recipients.length === 0) {
-      return NextResponse.json(
-        { error: 'Recipients array is required and must not be empty' },
-        { status: 400 }
-      );
+    const recipientsValidation = validateRequired(body.recipients, 'recipients');
+    if (!recipientsValidation.valid) {
+      return validationErrorResponse(recipientsValidation.error!);
     }
 
-    if (!body.purpose) {
-      return NextResponse.json(
-        { error: 'Purpose is required' },
-        { status: 400 }
-      );
+    if (!Array.isArray(body.recipients)) {
+      return validationErrorResponse('Recipients must be an array');
+    }
+
+    const purposeValidation = validateRequired(body.purpose, 'purpose');
+    if (!purposeValidation.valid) {
+      return validationErrorResponse(purposeValidation.error!);
     }
 
     // Limit batch size to prevent abuse
     if (body.recipients.length > 10) {
-      return NextResponse.json(
-        { error: 'Maximum 10 recipients per batch' },
-        { status: 400 }
-      );
+      return validationErrorResponse('Maximum 10 recipients per batch');
     }
 
     // Validate email addresses
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     for (const recipient of body.recipients) {
-      if (!recipient.email || !emailRegex.test(recipient.email)) {
-        return NextResponse.json(
-          { error: `Invalid email address: ${recipient.email || 'empty'}` },
-          { status: 400 }
-        );
+      if (!recipient.email) {
+        return validationErrorResponse('Each recipient must have an email address');
+      }
+      const emailValidation = validateEmail(recipient.email);
+      if (!emailValidation.valid) {
+        return validationErrorResponse(emailValidation.error!);
       }
     }
 
@@ -76,47 +81,8 @@ export async function POST(request: NextRequest) {
       failed,
     };
 
-    return NextResponse.json(response);
+    return successResponse(response);
   } catch (error) {
-    console.error('Batch draft email API error:', error);
-    return NextResponse.json(
-      { error: 'Failed to generate email drafts' },
-      { status: 500 }
-    );
+    return internalErrorResponse('Failed to generate email drafts');
   }
-}
-
-/**
- * Generate a subject line based on the email purpose
- */
-function generateSubjectLine(purpose: string): string {
-  const lowerPurpose = purpose.toLowerCase();
-
-  if (lowerPurpose.includes('meeting') || lowerPurpose.includes('schedule')) {
-    return 'Meeting Request';
-  }
-
-  if (lowerPurpose.includes('follow up') || lowerPurpose.includes('followup')) {
-    return 'Following Up';
-  }
-
-  if (lowerPurpose.includes('introduction') || lowerPurpose.includes('introduce')) {
-    return 'Introduction';
-  }
-
-  if (lowerPurpose.includes('question') || lowerPurpose.includes('ask')) {
-    return 'Quick Question';
-  }
-
-  if (lowerPurpose.includes('thank')) {
-    return 'Thank You';
-  }
-
-  if (lowerPurpose.includes('update') || lowerPurpose.includes('project')) {
-    return 'Project Update';
-  }
-
-  // Default: use a shortened version of the purpose
-  const words = purpose.split(' ').slice(0, 5).join(' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
 }

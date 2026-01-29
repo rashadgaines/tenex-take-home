@@ -2,16 +2,17 @@ import { NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { getTodaySchedule } from '@/lib/google/calendar';
-import { generateBrief } from '@/lib/ai/chat';
+import { generateBrief } from '@/lib/ai/chat/index';
 import type { UserPreferences } from '@/types/user';
 import type { EmailSuggestion, EmailDraft } from '@/types/email';
 import type { DbEmailSuggestion } from '@/types/database';
+import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 const DEFAULT_PREFERENCES: UserPreferences = {
   workingHours: { start: '09:00', end: '17:00' },
   protectedTimes: [],
   defaultMeetingDuration: 30,
-  timezone: 'America/Los_Angeles',
+  timezone: DEFAULT_TIMEZONE,
 };
 
 export async function GET() {
@@ -94,7 +95,6 @@ export async function GET() {
       emailSuggestions,
     });
   } catch (error) {
-    console.error('Brief API error:', error);
     return NextResponse.json(
       { error: 'Failed to generate brief' },
       { status: 500 }
