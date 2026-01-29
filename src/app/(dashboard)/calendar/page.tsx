@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
 import { Card, Button } from '@/components/ui';
 import { CalendarEvent, DaySchedule } from '@/types';
-import { getClientTimezone, isSameDayInTimezone, startOfDayInTimezone, endOfDayInTimezone } from '@/lib/date-utils';
+import { getClientTimezone, startOfDayInTimezone } from '@/lib/date-utils';
 
 function formatTime(date: Date, timezone: string): string {
   return date.toLocaleTimeString('en-US', {
@@ -14,6 +14,26 @@ function formatTime(date: Date, timezone: string): string {
     hour12: true,
     timeZone: timezone,
   });
+}
+
+// Get the date string (YYYY-MM-DD) for an event in the specified timezone
+function getEventDateString(event: CalendarEvent, timezone: string): string {
+  if (event.isAllDay) {
+    // All-day events: extract date directly from the ISO string (stored as noon UTC)
+    // The date portion is the intended calendar date
+    return event.start.toISOString().split('T')[0];
+  }
+  // Timed events: convert to target timezone and get the date
+  return event.start.toLocaleDateString('en-CA', { timeZone: timezone }); // en-CA gives YYYY-MM-DD format
+}
+
+// Get the date string (YYYY-MM-DD) for a day column
+function getDayDateString(day: Date): string {
+  // Day is created in local timezone, get its local date
+  const year = day.getFullYear();
+  const month = String(day.getMonth() + 1).padStart(2, '0');
+  const date = String(day.getDate()).padStart(2, '0');
+  return `${year}-${month}-${date}`;
 }
 
 function getWeekDays(baseDate: Date, weekStartsOn: number = 0): Date[] {
@@ -97,19 +117,12 @@ export default function CalendarPage() {
           end: new Date(event.end),
         }));
 
-        // Group events by day
+        // Group events by day using date string comparison
         const scheduleByDay: DaySchedule[] = weekDays.map((day) => {
+          const dayDateStr = getDayDateString(day);
           const dayEvents = parsedEvents.filter((event) => {
-            if (event.isAllDay) {
-              // All-day events: compare calendar dates directly (stored as noon UTC)
-              return (
-                event.start.getUTCFullYear() === day.getFullYear() &&
-                event.start.getUTCMonth() === day.getMonth() &&
-                event.start.getUTCDate() === day.getDate()
-              );
-            }
-            // Timed events: use timezone-aware comparison
-            return isSameDayInTimezone(event.start, day, userTimezone);
+            const eventDateStr = getEventDateString(event, userTimezone);
+            return eventDateStr === dayDateStr;
           });
 
           return {
@@ -151,8 +164,9 @@ export default function CalendarPage() {
   };
 
   const getEventsForDay = (date: Date): CalendarEvent[] => {
+    const targetDateStr = getDayDateString(date);
     const daySchedule = weekSchedule.find((schedule) =>
-      isSameDayInTimezone(schedule.date, date, userTimezone)
+      getDayDateString(schedule.date) === targetDateStr
     );
     return daySchedule?.events || [];
   };
