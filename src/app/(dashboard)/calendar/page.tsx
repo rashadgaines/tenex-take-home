@@ -87,7 +87,8 @@ export default function CalendarPage() {
           throw new Error('Failed to fetch calendar');
         }
 
-        const events = await response.json();
+        const data = await response.json();
+        const events = data.events || [];
 
         // Parse dates and organize by day
         const parsedEvents: CalendarEvent[] = events.map((event: CalendarEvent) => ({
