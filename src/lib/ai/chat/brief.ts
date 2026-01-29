@@ -79,10 +79,14 @@ export function generateActionItems(schedule: DaySchedule): ActionItem[] {
     }
   }
 
-  // Check for meetings without agendas
-  const meetingsWithoutAgenda = events.filter(
-    (e) => (e.category === 'meeting' || e.category === 'external') && !e.hasAgenda
-  );
+  // Check for meetings without agendas (only actual meetings; skip very short ones)
+  const MIN_MEETING_MINUTES_FOR_AGENDA = 15;
+  const meetingsWithoutAgenda = events.filter((e) => {
+    if (e.category !== 'meeting' && e.category !== 'external') return false;
+    if (e.hasAgenda) return false;
+    const durationMin = (new Date(e.end).getTime() - new Date(e.start).getTime()) / 60000;
+    return durationMin >= MIN_MEETING_MINUTES_FOR_AGENDA;
+  });
 
   for (const meeting of meetingsWithoutAgenda.slice(0, 2)) {
     items.push({
@@ -101,14 +105,20 @@ export function generateActionItems(schedule: DaySchedule): ActionItem[] {
 }
 
 /**
- * Generate a quick insight for the brief
+ * Generate a quick insight for the brief.
+ * Uses "meetings" (not "events") when referring to meeting load; only suggests "Find breaks" when there are 2+ meetings.
  */
 export function generateQuickInsight(schedule: DaySchedule): Insight | undefined {
-  const { stats } = schedule;
-  const totalScheduled = stats.meetingMinutes + stats.focusMinutes;
+  const { stats, events } = schedule;
   const workdayMinutes = 8 * 60;
+  const meetingCount = events.filter(
+    (e) => e.category === 'meeting' || e.category === 'external'
+  ).length;
 
-  if (stats.meetingMinutes > workdayMinutes * 0.6) {
+  if (
+    meetingCount >= 2 &&
+    stats.meetingMinutes > workdayMinutes * 0.6
+  ) {
     return {
       id: generateId(),
       type: 'warning',

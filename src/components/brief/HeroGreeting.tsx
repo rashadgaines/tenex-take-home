@@ -7,6 +7,7 @@ interface HeroGreetingProps {
   userName: string;
   date: Date;
   summary: string;
+  timezone?: string;
 }
 
 function getGreetingData(): { greeting: string; icon: React.ReactNode } {
@@ -55,7 +56,7 @@ function getGreetingData(): { greeting: string; icon: React.ReactNode } {
   };
 }
 
-export function HeroGreeting({ userName, date, summary }: HeroGreetingProps) {
+export function HeroGreeting({ userName, date, summary, timezone }: HeroGreetingProps) {
   const [mounted, setMounted] = useState(false);
   const { greeting, icon } = getGreetingData();
 
@@ -67,6 +68,7 @@ export function HeroGreeting({ userName, date, summary }: HeroGreetingProps) {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
+    ...(timezone && { timeZone: timezone }),
   });
 
   return (

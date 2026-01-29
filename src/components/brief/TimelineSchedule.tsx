@@ -8,14 +8,16 @@ import { CalendarEvent } from '@/types';
 
 interface TimelineScheduleProps {
   events: CalendarEvent[];
+  timezone?: string;
   onEventClick?: (event: CalendarEvent) => void;
 }
 
-function formatTime(date: Date): string {
+function formatTime(date: Date, timezone?: string): string {
   return date.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    ...(timezone && { timeZone: timezone }),
   });
 }
 
@@ -87,10 +89,11 @@ interface TimelineEventProps {
   event: CalendarEvent;
   index: number;
   isLast: boolean;
+  timezone?: string;
   onEventClick?: (event: CalendarEvent) => void;
 }
 
-function TimelineEvent({ event, index, isLast, onEventClick }: TimelineEventProps) {
+function TimelineEvent({ event, index, isLast, timezone, onEventClick }: TimelineEventProps) {
   const status = getEventStatus(event);
   const styles = categoryStyles[event.category];
   const isPast = status === 'past';
@@ -144,7 +147,7 @@ function TimelineEvent({ event, index, isLast, onEventClick }: TimelineEventProp
         role="button"
         tabIndex={0}
         onKeyDown={(e) => e.key === 'Enter' && onEventClick?.(event)}
-        aria-label={`${event.title} at ${formatTime(event.start)}`}
+        aria-label={`${event.title} at ${formatTime(event.start, timezone)}`}
       >
         <div className="flex items-start gap-3">
           {/* Category indicator */}
@@ -154,7 +157,7 @@ function TimelineEvent({ event, index, isLast, onEventClick }: TimelineEventProp
             {/* Time and status */}
             <div className="flex items-center gap-2 mb-1">
               <span className="text-sm font-medium text-[var(--text-secondary)]">
-                {formatTime(event.start)}
+                {formatTime(event.start, timezone)}
               </span>
               {isCurrent && (
                 <span className="px-2 py-0.5 text-xs font-medium bg-[var(--accent-primary)] text-[var(--bg-primary)] rounded-full">
@@ -202,7 +205,7 @@ function TimelineEvent({ event, index, isLast, onEventClick }: TimelineEventProp
   );
 }
 
-export function TimelineSchedule({ events, onEventClick }: TimelineScheduleProps) {
+export function TimelineSchedule({ events, timezone, onEventClick }: TimelineScheduleProps) {
   const [currentTimePosition, setCurrentTimePosition] = useState<number | null>(null);
   const sortedEvents = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
   const statusMessage = getNextEventInfo(sortedEvents);
@@ -289,6 +292,7 @@ export function TimelineSchedule({ events, onEventClick }: TimelineScheduleProps
                   event={event}
                   index={index}
                   isLast={index === sortedEvents.length - 1}
+                  timezone={timezone}
                   onEventClick={onEventClick}
                 />
               ))}

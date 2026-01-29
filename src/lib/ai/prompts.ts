@@ -16,6 +16,7 @@ Guidelines:
 - If you notice patterns (too many meetings, no breaks), mention them gently.
 - Never invent or assume calendar data—only reference what you've been given.
 - When drafting emails, match the user's likely tone (professional but personable).
+- Meeting = event with others (meeting/external). Task/focus = solo work block. Use the user's timezone for any times you mention.
 
 You have access to:
 - The user's calendar events
@@ -23,18 +24,38 @@ You have access to:
 - The ability to draft emails
 - Time analytics for their schedule`;
 
+/** Human-readable label for event category (meeting vs task/focus vs personal) */
+function getEventTypeLabel(category: CalendarEvent['category']): string {
+  switch (category) {
+    case 'meeting':
+      return 'meeting';
+    case 'external':
+      return 'external meeting';
+    case 'focus':
+      return 'focus';
+    case 'personal':
+      return 'personal';
+    default:
+      return category;
+  }
+}
+
 /**
- * Builds context about the user's current schedule for the AI
+ * Builds context about the user's current schedule for the AI.
+ * All times are in the user's timezone so the model can "say the right times."
  */
 export function buildScheduleContext(
   schedule: DaySchedule,
   preferences: UserPreferences
 ): string {
-  const { events, stats } = schedule;
+  const { events, stats, timezone } = schedule;
+  const tz = timezone || preferences.timezone;
+
   const date = new Date(schedule.date).toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
+    timeZone: tz,
   });
 
   const eventList = events
@@ -42,22 +63,34 @@ export function buildScheduleContext(
       const start = new Date(e.start).toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit',
+        hour12: true,
+        timeZone: tz,
       });
       const end = new Date(e.end).toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit',
+        hour12: true,
+        timeZone: tz,
       });
+      const typeLabel = getEventTypeLabel(e.category);
       const attendeeCount = e.attendees.length;
-      return `- ${start}-${end}: ${e.title} (${e.category}${attendeeCount > 0 ? `, ${attendeeCount} attendees` : ''})`;
+      const extra = attendeeCount > 0 ? `, ${attendeeCount} attendees` : '';
+      return `- ${start}-${end}: ${e.title} (${typeLabel}${extra})`;
     })
     .join('\n');
 
+  const meetingCount = events.filter((e) => e.category === 'meeting' || e.category === 'external').length;
+  const focusCount = events.filter((e) => e.category === 'focus').length;
+  const personalCount = events.filter((e) => e.category === 'personal').length;
+
   return `Current date: ${date}
 Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.end}
-Timezone: ${preferences.timezone}
+Timezone: ${tz}
 
-Today's schedule:
+Today's schedule (all times in user's timezone above):
 ${eventList || 'No events scheduled'}
+
+Summary: ${meetingCount} meeting(s), ${focusCount} focus block(s), ${personalCount} personal block(s).
 
 Stats:
 - Meeting time: ${Math.round(stats.meetingMinutes / 60 * 10) / 10} hours
@@ -138,9 +171,14 @@ export function buildBriefPrompt(params: {
 ${scheduleContext}
 
 Provide:
-1. A friendly but concise greeting appropriate for the time of day
-2. A 1-2 sentence summary of what their day looks like
-3. Note any important items requiring attention (conflicts, back-to-back meetings, etc.)
+1. A friendly but concise greeting appropriate for the time of day (line 1 only).
+2. A 1-2 sentence summary of what their day looks like (following lines).
+
+Rules:
+- All times in the schedule are in the user's timezone. When you mention times (e.g. "First meeting at 9 AM"), use those same times—they are already correct.
+- Distinguish meetings (with others) from focus/task blocks (solo work). Do not call focus blocks "meetings."
+- Only mention items that are in the data: e.g. conflicts, back-to-back meetings, meetings without agendas. Do not invent conflicts, action items, or problems.
+- If you mention back-to-back meetings or suggest finding breaks, that must match the schedule (e.g. consecutive meetings with no gap).
 
 Keep the entire response under 100 words. Be warm but efficient.`;
 }
@@ -190,21 +228,25 @@ export function buildViewContext(
 }
 
 /**
- * Format events for display in chat
+ * Format events for display in chat. Pass timezone so times match user preference.
  */
-export function formatEventsForChat(events: CalendarEvent[]): string {
+export function formatEventsForChat(
+  events: CalendarEvent[],
+  timezone?: string
+): string {
   if (events.length === 0) return 'No events found.';
+
+  const opts: Intl.DateTimeFormatOptions = {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    ...(timezone && { timeZone: timezone }),
+  };
 
   return events
     .map((e) => {
-      const start = new Date(e.start).toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-      });
-      const end = new Date(e.end).toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-      });
+      const start = new Date(e.start).toLocaleTimeString('en-US', opts);
+      const end = new Date(e.end).toLocaleTimeString('en-US', opts);
       return `${start}-${end}: ${e.title}`;
     })
     .join('\n');

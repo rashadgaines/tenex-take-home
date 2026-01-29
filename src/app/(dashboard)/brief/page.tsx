@@ -294,6 +294,7 @@ export default function BriefPage() {
           userName={userName}
           date={briefData.date}
           summary={briefData.summary}
+          timezone={briefData.todaySchedule.timezone}
         />
 
         {/* Quick Stats Cards */}
@@ -308,6 +309,7 @@ export default function BriefPage() {
         {/* Today's Schedule Timeline */}
         <TimelineSchedule
           events={briefData.todaySchedule.events}
+          timezone={briefData.todaySchedule.timezone}
           onEventClick={handleEventClick}
         />
 

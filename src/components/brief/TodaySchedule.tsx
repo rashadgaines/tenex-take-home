@@ -6,13 +6,15 @@ import { CalendarEvent } from '@/types';
 
 interface TodayScheduleProps {
   events: CalendarEvent[];
+  timezone?: string;
 }
 
-function formatTime(date: Date): string {
+function formatTime(date: Date, timezone?: string): string {
   return date.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    ...(timezone && { timeZone: timezone }),
   });
 }
 
@@ -31,7 +33,7 @@ const categoryStyles: Record<CalendarEvent['category'], { bar: string; bg: strin
   personal: { bar: 'bg-[var(--meeting-personal-border)]', bg: 'bg-[var(--meeting-personal)]' },
 };
 
-export function TodaySchedule({ events }: TodayScheduleProps) {
+export function TodaySchedule({ events, timezone }: TodayScheduleProps) {
   const sortedEvents = [...events].sort((a, b) => a.start.getTime() - b.start.getTime());
 
   return (
@@ -75,7 +77,7 @@ export function TodaySchedule({ events }: TodayScheduleProps) {
                     </span>
                   </div>
                   <div className="text-sm text-[var(--text-secondary)]">
-                    {formatTime(event.start)}
+                    {formatTime(event.start, timezone)}
                     {event.attendees.length > 0 && (
                       <span className="ml-2">
                         · {event.attendees.length} attendee{event.attendees.length > 1 ? 's' : ''}
