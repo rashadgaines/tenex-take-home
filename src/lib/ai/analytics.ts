@@ -289,6 +289,7 @@ export function calculateAvailableSlots(
         start: new Date(currentTime),
         end: new Date(Math.min(eventStart, workEnd.getTime())),
         available: true,
+        timezone: preferences.timezone,
       });
     }
 
@@ -302,6 +303,7 @@ export function calculateAvailableSlots(
       start: new Date(currentTime),
       end: workEnd,
       available: true,
+      timezone: preferences.timezone,
     });
   }
 
@@ -359,11 +361,13 @@ function filterProtectedTimes(
             start: new Date(slotStart),
             end: protectedStart,
             available: true,
+            timezone: preferences.timezone,
           });
           remainingSlot = {
             start: protectedEnd,
             end: new Date(slotEnd),
             available: true,
+            timezone: preferences.timezone,
           };
         } else if (slotStart < protStartTime) {
           // Protected time covers end of slot
@@ -371,6 +375,7 @@ function filterProtectedTimes(
             start: new Date(slotStart),
             end: protectedStart,
             available: true,
+            timezone: preferences.timezone,
           };
         } else {
           // Protected time covers start of slot
@@ -378,6 +383,7 @@ function filterProtectedTimes(
             start: protectedEnd,
             end: new Date(slotEnd),
             available: true,
+            timezone: preferences.timezone,
           };
         }
       }

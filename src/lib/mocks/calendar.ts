@@ -13,6 +13,8 @@ function addDays(date: Date, days: number): Date {
   return result;
 }
 
+const DEFAULT_TIMEZONE = 'America/Los_Angeles';
+
 export const mockEvents: CalendarEvent[] = [
   {
     id: '1',
@@ -20,6 +22,7 @@ export const mockEvents: CalendarEvent[] = [
     description: 'Review the new calendar assistant designs',
     start: addHours(startOfDay, 10),
     end: addHours(startOfDay, 11),
+    timezone: DEFAULT_TIMEZONE,
     attendees: [
       { email: 'joe@company.com', name: 'Joe Chen', responseStatus: 'accepted' },
       { email: 'sarah@company.com', name: 'Sarah Kim', responseStatus: 'accepted' },
@@ -35,6 +38,7 @@ export const mockEvents: CalendarEvent[] = [
     description: 'Daily sync with the team',
     start: addHours(startOfDay, 14),
     end: addHours(startOfDay, 14.5),
+    timezone: DEFAULT_TIMEZONE,
     attendees: [
       { email: 'dan@company.com', name: 'Dan Rodriguez', responseStatus: 'accepted' },
       { email: 'sally@company.com', name: 'Sally Park', responseStatus: 'tentative' },
@@ -49,6 +53,7 @@ export const mockEvents: CalendarEvent[] = [
     description: 'Quarterly review with Acme Corp',
     start: addHours(startOfDay, 16),
     end: addHours(startOfDay, 17.5),
+    timezone: DEFAULT_TIMEZONE,
     attendees: [
       { email: 'client@acme.com', name: 'Alex Johnson', responseStatus: 'accepted' },
     ],
@@ -62,6 +67,7 @@ export const mockEvents: CalendarEvent[] = [
     title: 'Morning Focus Time',
     start: addHours(addDays(startOfDay, 1), 9),
     end: addHours(addDays(startOfDay, 1), 11),
+    timezone: DEFAULT_TIMEZONE,
     attendees: [],
     isAllDay: false,
     category: 'focus',
@@ -73,6 +79,7 @@ export const mockEvents: CalendarEvent[] = [
     description: 'Weekly check-in',
     start: addHours(addDays(startOfDay, 2), 10),
     end: addHours(addDays(startOfDay, 2), 10.5),
+    timezone: DEFAULT_TIMEZONE,
     attendees: [
       { email: 'sarah@company.com', name: 'Sarah Kim', responseStatus: 'accepted' },
     ],
@@ -83,15 +90,16 @@ export const mockEvents: CalendarEvent[] = [
 ];
 
 export const mockAvailableSlots: TimeSlot[] = [
-  { start: addHours(startOfDay, 11), end: addHours(startOfDay, 12), available: true },
-  { start: addHours(startOfDay, 12), end: addHours(startOfDay, 14), available: true },
-  { start: addHours(startOfDay, 14.5), end: addHours(startOfDay, 16), available: true },
-  { start: addHours(addDays(startOfDay, 1), 14), end: addHours(addDays(startOfDay, 1), 17), available: true },
-  { start: addHours(addDays(startOfDay, 2), 14), end: addHours(addDays(startOfDay, 2), 17), available: true },
+  { start: addHours(startOfDay, 11), end: addHours(startOfDay, 12), available: true, timezone: 'America/Los_Angeles' },
+  { start: addHours(startOfDay, 12), end: addHours(startOfDay, 14), available: true, timezone: 'America/Los_Angeles' },
+  { start: addHours(startOfDay, 14.5), end: addHours(startOfDay, 16), available: true, timezone: 'America/Los_Angeles' },
+  { start: addHours(addDays(startOfDay, 1), 14), end: addHours(addDays(startOfDay, 1), 17), available: true, timezone: 'America/Los_Angeles' },
+  { start: addHours(addDays(startOfDay, 2), 14), end: addHours(addDays(startOfDay, 2), 17), available: true, timezone: 'America/Los_Angeles' },
 ];
 
 export const mockTodaySchedule: DaySchedule = {
   date: today,
+  timezone: 'America/Los_Angeles',
   events: mockEvents.filter((e) => {
     const eventDate = e.start;
     return (

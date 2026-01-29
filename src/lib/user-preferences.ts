@@ -1,5 +1,5 @@
 import { prisma } from './db';
-import { DEFAULT_TIMEZONE } from './date-utils';
+import { DEFAULT_TIMEZONE } from './constants';
 
 export interface UserPreferences {
   timezone: string;

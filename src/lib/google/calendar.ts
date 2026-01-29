@@ -135,7 +135,7 @@ async function mapGoogleEvent(event: calendar_v3.Schema$Event, userId: string): 
     const meetEntry = event.conferenceData.entryPoints.find(
       (entry) => entry.uri && (entry.uri.includes('meet.google') || entry.uri.includes('hangouts'))
     );
-    meetingLink = meetEntry?.uri;
+    meetingLink = meetEntry?.uri ?? undefined;
   }
 
   return {
@@ -277,7 +277,7 @@ export async function getWeekSchedule(
 ): Promise<DaySchedule[]> {
   const userTimezone = preferences.timezone;
   const today = new Date();
-  const weekStartsOn = preferences.weekStartsOn || 0; // 0 = Sunday
+  const weekStartsOn = 0; // 0 = Sunday
 
   // Calculate start of week in user's timezone
   const zonedToday = new Date(today.toLocaleString('en-US', { timeZone: userTimezone }));
@@ -344,7 +344,7 @@ export function calculateAvailableSlots(
 
   // Filter out protected times for this day
   const protectedTimes = preferences.protectedTimes.filter((pt) =>
-    pt.daysOfWeek.includes(dayOfWeek)
+    pt.days.includes(dayOfWeek)
   );
 
   // Get all blocked time ranges (events + protected times)

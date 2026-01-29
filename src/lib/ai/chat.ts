@@ -10,7 +10,7 @@ import {
   Insight,
   ActionItem,
 } from '@/types/ai';
-import { DaySchedule } from '@/types/calendar';
+import { DaySchedule, CalendarEvent } from '@/types/calendar';
 import { UserPreferences, DEFAULT_USER_PREFERENCES } from '@/types/user';
 import { EmailSuggestion } from '@/types/email';
 import {
@@ -644,12 +644,14 @@ export function createMockSchedule(date: Date = new Date()): DaySchedule {
   const baseDate = new Date(date);
   baseDate.setHours(0, 0, 0, 0);
 
-  const events = [
+  const timezone = 'America/Los_Angeles';
+  const events: CalendarEvent[] = [
     {
       id: '1',
       title: 'Team Standup',
       start: new Date(baseDate.getTime() + 9 * 60 * 60 * 1000),
       end: new Date(baseDate.getTime() + 9.5 * 60 * 60 * 1000),
+      timezone,
       attendees: [
         { email: 'colleague@example.com', name: 'Colleague', responseStatus: 'accepted' as const },
       ],
@@ -662,6 +664,7 @@ export function createMockSchedule(date: Date = new Date()): DaySchedule {
       title: 'Focus Time',
       start: new Date(baseDate.getTime() + 10 * 60 * 60 * 1000),
       end: new Date(baseDate.getTime() + 12 * 60 * 60 * 1000),
+      timezone,
       attendees: [],
       isAllDay: false,
       category: 'focus' as const,
@@ -672,6 +675,7 @@ export function createMockSchedule(date: Date = new Date()): DaySchedule {
       title: 'Client Call',
       start: new Date(baseDate.getTime() + 14 * 60 * 60 * 1000),
       end: new Date(baseDate.getTime() + 15 * 60 * 60 * 1000),
+      timezone,
       attendees: [
         { email: 'client@example.com', name: 'Client', responseStatus: 'accepted' as const },
       ],
@@ -685,6 +689,7 @@ export function createMockSchedule(date: Date = new Date()): DaySchedule {
 
   return {
     date: baseDate,
+    timezone,
     events,
     availableSlots: [], // Would be calculated from preferences
     stats,

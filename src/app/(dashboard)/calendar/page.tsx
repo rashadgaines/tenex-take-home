@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
 import { Card, Button } from '@/components/ui';
 import { CalendarEvent, DaySchedule } from '@/types';
-import { getUserTimezone, isSameDayInTimezone, startOfDayInTimezone, endOfDayInTimezone } from '@/lib/date-utils';
+import { getClientTimezone, isSameDayInTimezone, startOfDayInTimezone, endOfDayInTimezone } from '@/lib/date-utils';
 
 function formatTime(date: Date, timezone: string): string {
   return date.toLocaleTimeString('en-US', {
@@ -18,7 +18,7 @@ function formatTime(date: Date, timezone: string): string {
 
 function getWeekDays(baseDate: Date, weekStartsOn: number = 0): Date[] {
   const days: Date[] = [];
-  const zonedBaseDate = new Date(baseDate.toLocaleString('en-US', { timeZone: getUserTimezone() }));
+  const zonedBaseDate = new Date(baseDate.toLocaleString('en-US', { timeZone: getClientTimezone() }));
 
   // Calculate start of week in user's timezone
   const startOfWeek = new Date(zonedBaseDate);
@@ -53,7 +53,7 @@ export default function CalendarPage() {
 
   // Initialize user timezone on mount
   useEffect(() => {
-    setUserTimezone(getUserTimezone());
+    setUserTimezone(getClientTimezone());
   }, []);
 
   const weekDays = getWeekDays(currentDate);

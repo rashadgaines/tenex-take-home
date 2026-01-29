@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
     const events = await getEvents(session.user.id, startDate, endDate);
 
     // Group events by day
-    const schedules = groupEventsByDay(events, startDate, endDate);
+    const schedules = groupEventsByDay(events, startDate, endDate, preferences.timezone);
 
     // Calculate analytics
     const analytics = calculateTimeAnalytics(schedules, period, preferences);
@@ -76,7 +76,8 @@ export async function GET(request: NextRequest) {
 function groupEventsByDay(
   events: CalendarEvent[],
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  timezone: string
 ): DaySchedule[] {
   const schedules: DaySchedule[] = [];
   const current = new Date(startDate);
@@ -113,6 +114,7 @@ function groupEventsByDay(
 
     schedules.push({
       date: new Date(current),
+      timezone,
       events: dayEvents,
       availableSlots: [],
       stats: {
