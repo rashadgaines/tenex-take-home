@@ -22,7 +22,6 @@ export function ChatInput({
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [isFocused, setIsFocused] = useState(false);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -62,17 +61,10 @@ export function ChatInput({
       <div className="max-w-2xl mx-auto">
         <motion.div
           className={`
-            relative bg-[var(--bg-tertiary)] border rounded-2xl
-            transition-colors duration-200
-            ${isFocused ? 'border-[var(--border-medium)] shadow-lg' : 'border-[var(--border-light)]'}
+            relative bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-2xl
+            shadow-sm
             ${isDisabled ? 'opacity-70' : ''}
           `}
-          animate={{
-            boxShadow: isFocused
-              ? '0 4px 12px rgba(0, 0, 0, 0.2), 0 0 0 1px var(--border-medium)'
-              : '0 1px 3px rgba(0, 0, 0, 0.1)',
-          }}
-          transition={{ duration: 0.2 }}
         >
           {/* Textarea */}
           <textarea
@@ -80,8 +72,6 @@ export function ChatInput({
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
             placeholder={placeholder}
             disabled={isDisabled}
             rows={1}
