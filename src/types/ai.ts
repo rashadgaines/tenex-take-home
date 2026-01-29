@@ -60,7 +60,7 @@ export interface ActionItem {
 
 export interface ActionButton {
   label: string;
-  action: 'suggest_times' | 'decline' | 'send_email' | 'edit' | 'dismiss' | 'open_chat';
+  action: 'suggest_times' | 'decline' | 'send_email' | 'edit' | 'dismiss' | 'open_chat' | 'schedule_event';
   payload?: unknown;
 }
 

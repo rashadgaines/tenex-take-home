@@ -5,6 +5,16 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { MainCanvas, ChatInput } from '@/components/layout';
 import type { ChatMessage, ChatResponse } from '@/types/ai';
 
+// Utility function to ensure plain text rendering by escaping HTML entities
+function sanitizeForPlainText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 const examplePrompts = [
   'Schedule a meeting next week',
   'Block time for deep work',
@@ -139,7 +149,10 @@ function PlanPageContent() {
                         : 'bg-[var(--bg-tertiary)] border border-[var(--border-light)]'
                     }`}
                   >
-                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    <p
+                      className="whitespace-pre-wrap"
+                      dangerouslySetInnerHTML={{ __html: sanitizeForPlainText(message.content) }}
+                    />
                   </div>
                 </div>
               ))}

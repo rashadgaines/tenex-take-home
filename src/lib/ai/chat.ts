@@ -21,6 +21,7 @@ import {
   buildEmailDraftPrompt,
 } from './prompts';
 import { calculateTimeAnalytics, calculateAvailableSlots, calculateDayStats } from './analytics';
+import { createEvent } from '@/lib/google/calendar';
 
 // Lazy initialization of OpenAI client
 let openaiClient: OpenAI | null = null;
@@ -44,9 +45,16 @@ function getOpenAIClient(): OpenAI {
 export async function processChat(
   request: ChatRequest,
   schedule: DaySchedule,
-  preferences: UserPreferences = DEFAULT_USER_PREFERENCES
+  preferences: UserPreferences = DEFAULT_USER_PREFERENCES,
+  userId?: string
 ): Promise<ChatResponse> {
   const { message, context } = request;
+
+  // Check if this is a scheduling request that we can handle directly
+  const schedulingResult = await detectAndHandleSchedulingRequest(message, schedule, preferences, userId);
+  if (schedulingResult) {
+    return schedulingResult;
+  }
 
   // Build the full context for the AI
   const scheduleContext = buildScheduleContext(schedule, preferences);
@@ -196,6 +204,197 @@ export async function generateEmailDraft(params: {
   });
 
   return response.choices[0]?.message?.content || '';
+}
+
+/**
+ * Detect and handle scheduling requests by actually creating events
+ */
+async function detectAndHandleSchedulingRequest(
+  message: string,
+  schedule: DaySchedule,
+  preferences: UserPreferences,
+  userId?: string
+): Promise<ChatResponse | null> {
+  const lowerMessage = message.toLowerCase();
+
+  // Check for scheduling patterns
+  const schedulingPatterns = [
+    /schedule.*meeting/i,
+    /set up.*meeting/i,
+    /create.*meeting/i,
+    /book.*meeting/i,
+    /schedule.*call/i,
+    /set up.*call/i,
+    /add.*event/i,
+    /create.*event/i,
+    /block.*time/i,
+  ];
+
+  const isSchedulingRequest = schedulingPatterns.some(pattern => pattern.test(lowerMessage));
+
+  if (!isSchedulingRequest || !userId) {
+    return null;
+  }
+
+  try {
+    // Use AI to extract event details from the message
+    const extractionPrompt = `
+Extract event details from this scheduling request. Return ONLY a valid JSON object with these exact fields:
+- title: string (brief, descriptive title for the event)
+- duration: number (duration in minutes: 15, 30, 60, 90, etc.)
+- date: string (YYYY-MM-DD format, or null if not specified)
+- time: string (HH:MM format in 24-hour time, e.g., "14:30" for 2:30 PM, or null if not specified)
+- attendees: string[] (array of email addresses only, extract from names if possible, or empty array)
+- description: string (additional details about the event, or empty string)
+- location: string (meeting location if mentioned, or empty string)
+
+Examples:
+Input: "Schedule a 30 min call with john@company.com tomorrow at 3pm"
+Output: {"title":"Call with John","duration":30,"date":"2024-01-30","time":"15:00","attendees":["john@company.com"],"description":"","location":""}
+
+Input: "Set up a team meeting next Monday"
+Output: {"title":"Team Meeting","duration":60,"date":"2024-01-29","time":"10:00","attendees":[],"description":"","location":""}
+
+Message: "${message}"
+
+Current date: ${new Date().toISOString().split('T')[0]}
+Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.end}
+`;
+
+    const extractionResponse = await getOpenAIClient().chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 200,
+      messages: [
+        { role: 'system', content: 'Extract event details as JSON only.' },
+        { role: 'user', content: extractionPrompt },
+      ],
+    });
+
+    const extractionText = extractionResponse.choices[0]?.message?.content || '{}';
+
+    let eventDetails;
+    try {
+      // Clean up the response - remove markdown code blocks and extra text
+      const cleanText = extractionText.replace(/```json\n?|\n?```/g, '').trim();
+      eventDetails = JSON.parse(cleanText);
+    } catch (parseError) {
+      console.error('Failed to parse AI extraction response:', extractionText);
+      // Create a basic event from the message if parsing fails
+      eventDetails = {
+        title: message.length > 50 ? message.substring(0, 47) + '...' : message,
+        duration: 30,
+        date: null,
+        time: null,
+        attendees: [],
+        description: '',
+        location: '',
+      };
+    }
+
+    // Determine date and time with smart defaults
+    const today = new Date();
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    let eventDate: string;
+    let eventTime: string;
+
+    if (eventDetails.date) {
+      eventDate = eventDetails.date;
+    } else {
+      // Check if message mentions "tomorrow", "next week", etc.
+      const lowerMessage = message.toLowerCase();
+      if (lowerMessage.includes('tomorrow')) {
+        eventDate = tomorrow.toISOString().split('T')[0];
+      } else if (lowerMessage.includes('today')) {
+        eventDate = today.toISOString().split('T')[0];
+      } else {
+        eventDate = tomorrow.toISOString().split('T')[0]; // Default to tomorrow
+      }
+    }
+
+    if (eventDetails.time) {
+      eventTime = eventDetails.time;
+    } else {
+      // Default to 10 AM or next available slot during working hours
+      const workingStart = preferences.workingHours.start;
+      eventTime = workingStart || '10:00';
+    }
+
+    const eventData = {
+      title: eventDetails.title || (message.length > 50 ? message.substring(0, 47) + '...' : message),
+      description: eventDetails.description || '',
+      start: new Date(`${eventDate}T${eventTime}:00`),
+      end: new Date(`${eventDate}T${eventTime}:00`),
+      attendees: Array.isArray(eventDetails.attendees) ? eventDetails.attendees : [],
+      location: eventDetails.location || '',
+    };
+
+    // Set end time based on duration
+    const duration = typeof eventDetails.duration === 'number' ? eventDetails.duration : 30;
+    eventData.end.setMinutes(eventData.end.getMinutes() + duration);
+
+    // Validate the event data
+    const now = new Date();
+    if (eventData.start <= now) {
+      // If the scheduled time is in the past or too soon, move it to tomorrow
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(eventData.start.getHours(), eventData.start.getMinutes(), 0, 0);
+      eventData.start = tomorrow;
+      eventData.end = new Date(tomorrow.getTime() + duration * 60 * 1000);
+    }
+
+    // Ensure duration is reasonable (15 minutes to 8 hours)
+    if (duration < 15 || duration > 480) {
+      eventData.end = new Date(eventData.start.getTime() + 30 * 60 * 1000); // Default to 30 minutes
+    }
+
+    // Validate attendees are email-like
+    eventData.attendees = eventData.attendees.filter(email =>
+      typeof email === 'string' &&
+      email.includes('@') &&
+      email.length > 5 &&
+      email.length < 254
+    );
+
+    // Create the event
+    const createdEvent = await createEvent(userId, eventData);
+
+    // Return success response
+    const responseMessage: ChatMessage = {
+      id: generateId(),
+      role: 'assistant',
+      content: `✅ I've scheduled "${createdEvent.title}" for ${eventData.start.toLocaleDateString()} at ${eventData.start.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      })} - ${eventData.end.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      })}.` + (createdEvent.attendees.length > 0 ? ` Invitations sent to ${createdEvent.attendees.length} attendee(s).` : ''),
+      timestamp: new Date(),
+    };
+
+    return {
+      message: responseMessage,
+      suggestedActions: [],
+    };
+
+  } catch (error) {
+    console.error('Failed to create event:', error);
+    return null; // Fall back to normal AI response
+  }
+}
+
+/**
+ * Get tomorrow's date as YYYY-MM-DD
+ */
+function getTomorrowDate(): string {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return tomorrow.toISOString().split('T')[0];
 }
 
 /**

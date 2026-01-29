@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
     const schedule = await getTodaySchedule(session.user.id, preferences);
 
     // Process the chat message with real data
-    const response = await processChat(body, schedule, preferences);
+    const response = await processChat(body, schedule, preferences, session.user.id);
 
     return NextResponse.json(response);
   } catch (error) {
