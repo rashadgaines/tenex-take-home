@@ -22,6 +22,8 @@ const examplePrompts = [
   'Plan my week ahead',
 ];
 
+const CHAT_HISTORY_KEY = 'tenex-chat-history';
+
 function PlanPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -29,6 +31,39 @@ function PlanPageContent() {
   const [isLoading, setIsLoading] = useState(false);
   const processedPromptRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const initialLoadRef = useRef(false);
+
+  // Restore chat history from localStorage on mount
+  useEffect(() => {
+    if (initialLoadRef.current) return;
+    initialLoadRef.current = true;
+
+    try {
+      const saved = localStorage.getItem(CHAT_HISTORY_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Restore messages with proper Date objects
+        const restored = parsed.map((msg: ChatMessage) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp),
+        }));
+        setMessages(restored);
+      }
+    } catch (error) {
+      console.error('Failed to restore chat history:', error);
+    }
+  }, []);
+
+  // Save chat history to localStorage whenever messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      try {
+        localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(messages));
+      } catch (error) {
+        console.error('Failed to save chat history:', error);
+      }
+    }
+  }, [messages]);
 
   // Handle pre-filled prompt from URL
   useEffect(() => {
@@ -108,9 +143,28 @@ function PlanPageContent() {
     handleSend(prompt);
   };
 
+  const handleNewChat = () => {
+    setMessages([]);
+    localStorage.removeItem(CHAT_HISTORY_KEY);
+  };
+
   return (
     <>
-      <MainCanvas>
+      <MainCanvas
+        headerAction={
+          messages.length > 0 ? (
+            <button
+              onClick={handleNewChat}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-elevated)] border border-[var(--border-light)] rounded-lg transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              New Chat
+            </button>
+          ) : undefined
+        }
+      >
         <div className="max-w-3xl mx-auto pb-32">
           {messages.length === 0 ? (
             // Empty state

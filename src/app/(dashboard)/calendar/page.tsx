@@ -97,11 +97,20 @@ export default function CalendarPage() {
           end: new Date(event.end),
         }));
 
-        // Group events by day using timezone-aware comparison
+        // Group events by day
         const scheduleByDay: DaySchedule[] = weekDays.map((day) => {
-          const dayEvents = parsedEvents.filter((event) =>
-            isSameDayInTimezone(event.start, day, userTimezone)
-          );
+          const dayEvents = parsedEvents.filter((event) => {
+            if (event.isAllDay) {
+              // All-day events: compare calendar dates directly (stored as noon UTC)
+              return (
+                event.start.getUTCFullYear() === day.getFullYear() &&
+                event.start.getUTCMonth() === day.getMonth() &&
+                event.start.getUTCDate() === day.getDate()
+              );
+            }
+            // Timed events: use timezone-aware comparison
+            return isSameDayInTimezone(event.start, day, userTimezone);
+          });
 
           return {
             date: day,

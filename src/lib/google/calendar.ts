@@ -110,11 +110,11 @@ async function mapGoogleEvent(event: calendar_v3.Schema$Event, userId: string): 
       isAllDay = false;
     } else if (event.start?.date) {
       // All-day event - Google provides date string (YYYY-MM-DD)
-      // Convert to start of day in user's timezone, then to UTC
-      const startOfDay = startOfDayInTimezone(event.start.date, userTimezone);
-      const endOfDay = endOfDayInTimezone(event.end?.date || event.start.date, userTimezone);
-      start = startOfDay;
-      end = endOfDay;
+      // Use UTC noon to prevent day boundary issues across timezones
+      // Noon UTC stays on the same calendar day for all timezones from UTC-12 to UTC+12
+      start = new Date(`${event.start.date}T12:00:00Z`);
+      const endDateStr = event.end?.date || event.start.date;
+      end = new Date(`${endDateStr}T12:00:00Z`);
       isAllDay = true;
     } else {
       throw new Error('Invalid event dates: no dateTime or date provided');
