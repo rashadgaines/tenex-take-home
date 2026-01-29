@@ -24,6 +24,7 @@ import { detectAndExecuteWorkflow } from './workflows';
 import { detectAndHandleProtectedTimeRequest } from './protected-time';
 import { detectAndHandleSchedulingRequest } from './scheduling';
 import { handleConfirmation } from './confirmations';
+import { detectAndHandleEmailRequest } from './email-handler';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 // Re-export public functions from submodules
@@ -68,6 +69,14 @@ export async function processChat(
   const schedulingResult = await detectAndHandleSchedulingRequest(message, schedule, preferences, userId);
   if (schedulingResult) {
     return schedulingResult;
+  }
+
+  // Check if this is an email request
+  if (userId) {
+    const emailResult = await detectAndHandleEmailRequest(message, userId, userName);
+    if (emailResult) {
+      return emailResult;
+    }
   }
 
   // Build the full context for the AI
