@@ -15,6 +15,7 @@ const navItems: NavItem[] = [
   { href: '/plan', label: 'Plan' },
   { href: '/time', label: 'Time' },
   { href: '/calendar', label: 'Calendar' },
+  { href: '/settings', label: 'Settings' },
 ];
 
 interface TopNavProps {

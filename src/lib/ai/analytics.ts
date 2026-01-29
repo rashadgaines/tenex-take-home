@@ -1,5 +1,5 @@
 import { CalendarEvent, DaySchedule, TimeSlot } from '@/types/calendar';
-import { TimeAnalytics, Insight } from '@/types/ai';
+import { TimeAnalytics, Insight, Recommendation } from '@/types/ai';
 import { UserPreferences } from '@/types/user';
 
 /**
@@ -433,4 +433,198 @@ export function calculateDayStats(events: CalendarEvent[]): {
     focusMinutes: Math.round(focusMinutes),
     availableMinutes: Math.round(availableMinutes),
   };
+}
+
+/**
+ * Generate actionable recommendations based on schedule analysis
+ */
+export function generateActionableRecommendations(
+  schedules: DaySchedule[],
+  preferences: UserPreferences
+): Recommendation[] {
+  const recommendations: Recommendation[] = [];
+  let recId = 1;
+
+  if (schedules.length === 0) {
+    return recommendations;
+  }
+
+  // Find large available blocks (2+ hours) for focus time
+  const largeBlocks = findLargeAvailableBlocks(schedules);
+  if (largeBlocks.length > 0) {
+    recommendations.push({
+      id: `rec-${recId++}`,
+      type: 'schedule_focus_time',
+      priority: 'high',
+      title: 'Block focus time',
+      description: `You have ${largeBlocks.length} slot(s) of 2+ hours available this week`,
+      impact: 'Protect your deep work time from meeting creep',
+      action: {
+        type: 'schedule_event',
+        payload: { suggestedSlots: largeBlocks.slice(0, 3) },
+        prompt: 'Block focus time during my available slots this week',
+      },
+    });
+  }
+
+  // Check for back-to-back meetings
+  const backToBackDays = findBackToBackMeetingDays(schedules);
+  if (backToBackDays.length > 0) {
+    recommendations.push({
+      id: `rec-${recId++}`,
+      type: 'add_buffer',
+      priority: 'medium',
+      title: 'Add meeting buffers',
+      description: `You have back-to-back meetings on ${backToBackDays.join(', ')}`,
+      impact: 'Add 15-min buffers to reduce stress and prepare better',
+      action: {
+        type: 'modify_schedule',
+        payload: { days: backToBackDays },
+        prompt: 'Add 15-minute buffers between my meetings this week',
+      },
+    });
+  }
+
+  // Check for scattered meetings (days with gaps between meetings)
+  const scatteredDays = findScatteredMeetingDays(schedules);
+  if (scatteredDays.length > 0) {
+    recommendations.push({
+      id: `rec-${recId++}`,
+      type: 'batch_meetings',
+      priority: 'low',
+      title: 'Consolidate meetings',
+      description: `${scatteredDays.join(', ')} have meetings scattered throughout the day`,
+      impact: 'Create longer focus blocks by batching meetings together',
+      action: {
+        type: 'suggest_reorganization',
+        payload: { days: scatteredDays },
+        prompt: 'How can I batch my meetings together to create more focus time?',
+      },
+    });
+  }
+
+  // Check meeting load
+  const totalMeetingHours = schedules.reduce((sum, s) => sum + s.stats.meetingMinutes, 0) / 60;
+  const avgMeetingHoursPerDay = totalMeetingHours / schedules.length;
+  if (avgMeetingHoursPerDay > 4) {
+    recommendations.push({
+      id: `rec-${recId++}`,
+      type: 'decline_meeting',
+      priority: 'high',
+      title: 'Review meeting load',
+      description: `You're averaging ${avgMeetingHoursPerDay.toFixed(1)} hours of meetings per day`,
+      impact: 'Declining non-essential meetings could free up significant time',
+      action: {
+        type: 'analyze_meetings',
+        payload: { threshold: 4 },
+        prompt: 'Which meetings this week could I decline or make optional?',
+      },
+    });
+  }
+
+  // Check for very early or late meetings
+  const earlyLateMeetings = findEarlyLateMeetings(schedules, preferences);
+  if (earlyLateMeetings.length > 0) {
+    recommendations.push({
+      id: `rec-${recId++}`,
+      type: 'reschedule',
+      priority: 'medium',
+      title: 'Reschedule off-hours meetings',
+      description: `${earlyLateMeetings.length} meeting(s) are outside your working hours`,
+      impact: 'Protect your work-life balance',
+      action: {
+        type: 'reschedule_meetings',
+        payload: { meetings: earlyLateMeetings.map(m => m.id) },
+        prompt: 'Help me reschedule meetings that are outside my working hours',
+      },
+    });
+  }
+
+  return recommendations.slice(0, 5); // Return top 5 recommendations
+}
+
+/**
+ * Find available time slots of 2+ hours
+ */
+function findLargeAvailableBlocks(schedules: DaySchedule[]): TimeSlot[] {
+  const largeBlocks: TimeSlot[] = [];
+
+  for (const schedule of schedules) {
+    for (const slot of schedule.availableSlots) {
+      if (slot.available) {
+        const duration = (new Date(slot.end).getTime() - new Date(slot.start).getTime()) / 60000;
+        if (duration >= 120) { // 2+ hours
+          largeBlocks.push(slot);
+        }
+      }
+    }
+  }
+
+  return largeBlocks;
+}
+
+/**
+ * Find days with scattered meetings (large gaps between meetings)
+ */
+function findScatteredMeetingDays(schedules: DaySchedule[]): string[] {
+  const scatteredDays: string[] = [];
+
+  for (const schedule of schedules) {
+    const meetings = schedule.events
+      .filter((e) => e.category === 'meeting' || e.category === 'external')
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+    if (meetings.length >= 3) {
+      let hasLargeGaps = false;
+      for (let i = 0; i < meetings.length - 1; i++) {
+        const gap = (new Date(meetings[i + 1].start).getTime() -
+          new Date(meetings[i].end).getTime()) / 60000;
+        if (gap > 90) { // Gap > 1.5 hours indicates scattered meetings
+          hasLargeGaps = true;
+          break;
+        }
+      }
+      if (hasLargeGaps) {
+        const dayName = new Date(schedule.date).toLocaleDateString('en-US', { weekday: 'short' });
+        if (!scatteredDays.includes(dayName)) {
+          scatteredDays.push(dayName);
+        }
+      }
+    }
+  }
+
+  return scatteredDays;
+}
+
+/**
+ * Find meetings outside working hours
+ */
+function findEarlyLateMeetings(
+  schedules: DaySchedule[],
+  preferences: UserPreferences
+): CalendarEvent[] {
+  const [workStartHour, workStartMin] = preferences.workingHours.start.split(':').map(Number);
+  const [workEndHour, workEndMin] = preferences.workingHours.end.split(':').map(Number);
+  const workStartMinutes = workStartHour * 60 + workStartMin;
+  const workEndMinutes = workEndHour * 60 + workEndMin;
+
+  const offHoursMeetings: CalendarEvent[] = [];
+
+  for (const schedule of schedules) {
+    for (const event of schedule.events) {
+      if (event.isAllDay) continue;
+      if (event.category !== 'meeting' && event.category !== 'external') continue;
+
+      const startDate = new Date(event.start);
+      const endDate = new Date(event.end);
+      const eventStartMinutes = startDate.getHours() * 60 + startDate.getMinutes();
+      const eventEndMinutes = endDate.getHours() * 60 + endDate.getMinutes();
+
+      if (eventStartMinutes < workStartMinutes || eventEndMinutes > workEndMinutes) {
+        offHoursMeetings.push(event);
+      }
+    }
+  }
+
+  return offHoursMeetings;
 }

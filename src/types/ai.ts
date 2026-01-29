@@ -98,3 +98,102 @@ export interface DraftEmailResponse {
   draft: EmailDraft;
   alternatives?: string[];
 }
+
+// Multi-meeting scheduling types
+export interface ExtractedMeeting {
+  title: string;
+  duration: number;
+  date: string | null;
+  time: string | null;
+  attendees: string[];
+  description: string;
+  location: string;
+}
+
+export interface BatchScheduleResult {
+  created: Array<{
+    title: string;
+    start: Date;
+    end: Date;
+    attendees: string[];
+  }>;
+  failed: Array<{
+    title: string;
+    error: string;
+  }>;
+}
+
+// Batch email drafting types
+export interface BatchDraftEmailRequest {
+  recipients: Array<{
+    email: string;
+    name?: string;
+  }>;
+  purpose: string;
+  suggestedTimes?: TimeSlot[];
+  tone?: 'formal' | 'casual' | 'neutral';
+}
+
+export interface BatchDraftEmailResponse {
+  drafts: Array<{
+    id: string;
+    to: string;
+    toName?: string;
+    subject: string;
+    body: string;
+  }>;
+  failed: Array<{
+    email: string;
+    error: string;
+  }>;
+}
+
+// Actionable recommendations
+export interface Recommendation {
+  id: string;
+  type: 'schedule_focus_time' | 'add_buffer' | 'batch_meetings' | 'decline_meeting' | 'reschedule';
+  priority: 'high' | 'medium' | 'low';
+  title: string;
+  description: string;
+  impact: string;
+  action: {
+    type: string;
+    payload: Record<string, unknown>;
+    prompt: string;
+  };
+}
+
+export interface ActionableAnalytics extends TimeAnalytics {
+  recommendations: Recommendation[];
+}
+
+// Workflow orchestration types
+export interface WorkflowStep {
+  id: string;
+  type: 'schedule' | 'email' | 'update_preferences' | 'analyze';
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  description: string;
+  result?: unknown;
+  error?: string;
+}
+
+export interface Workflow {
+  id: string;
+  steps: WorkflowStep[];
+  currentStep: number;
+  status: 'running' | 'completed' | 'failed';
+  summary?: string;
+}
+
+export interface WorkflowChatResponse extends ChatResponse {
+  workflow?: Workflow;
+}
+
+export interface WorkflowPlan {
+  isMultiStep: boolean;
+  steps: Array<{
+    type: 'schedule' | 'email' | 'update_preferences' | 'analyze';
+    description: string;
+    params: Record<string, unknown>;
+  }>;
+}

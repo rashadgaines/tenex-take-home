@@ -10,7 +10,7 @@ export interface UserPreferences {
   protectedTimes: Array<{
     start: string; // HH:mm format
     end: string; // HH:mm format
-    daysOfWeek: number[]; // 0 = Sunday, 6 = Saturday
+    days: number[]; // 0 = Sunday, 6 = Saturday
   }>;
   defaultMeetingDuration: number; // minutes
   calendarIds?: string[]; // Google Calendar IDs to sync
@@ -123,7 +123,7 @@ export async function isProtectedTime(
   const dayOfWeek = date.getDay(); // 0 = Sunday, 6 = Saturday
 
   return prefs.protectedTimes.some(protectedTime => {
-    if (!protectedTime.daysOfWeek.includes(dayOfWeek)) {
+    if (!protectedTime.days.includes(dayOfWeek)) {
       return false;
     }
 

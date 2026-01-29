@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { createDateFromStrings, isInPast } from '../date-utils';
-import { getUserTimezone } from '../user-preferences';
+import { getUserTimezone, getUserPreferences, updateUserPreferences } from '../user-preferences';
 import {
   ChatMessage,
   ChatRequest,
@@ -10,6 +10,10 @@ import {
   BriefData,
   Insight,
   ActionItem,
+  WorkflowPlan,
+  Workflow,
+  WorkflowStep,
+  WorkflowChatResponse,
 } from '@/types/ai';
 import { DaySchedule, CalendarEvent } from '@/types/calendar';
 import { UserPreferences, DEFAULT_USER_PREFERENCES } from '@/types/user';
@@ -51,6 +55,20 @@ export async function processChat(
   userId?: string
 ): Promise<ChatResponse> {
   const { message, context } = request;
+
+  // Check for multi-step workflow first
+  if (userId) {
+    const workflowResult = await detectAndExecuteWorkflow(message, schedule, preferences, userId);
+    if (workflowResult) {
+      return workflowResult;
+    }
+  }
+
+  // Check if this is a protected time request
+  const protectedTimeResult = await detectAndHandleProtectedTimeRequest(message, preferences, userId);
+  if (protectedTimeResult) {
+    return protectedTimeResult;
+  }
 
   // Check if this is a scheduling request that we can handle directly
   const schedulingResult = await detectAndHandleSchedulingRequest(message, schedule, preferences, userId);
@@ -209,7 +227,475 @@ export async function generateEmailDraft(params: {
 }
 
 /**
+ * Generate batch email drafts for multiple recipients
+ */
+export async function generateBatchEmailDrafts(params: {
+  userName: string;
+  recipients: Array<{ email: string; name?: string }>;
+  purpose: string;
+  suggestedTimes?: Date[];
+  tone?: 'formal' | 'casual' | 'neutral';
+}): Promise<{
+  drafts: Array<{ email: string; name?: string; body: string }>;
+  failed: Array<{ email: string; error: string }>;
+}> {
+  const results = await Promise.all(
+    params.recipients.map(async (recipient) => {
+      try {
+        const body = await generateEmailDraft({
+          userName: params.userName,
+          recipient: recipient.email,
+          recipientName: recipient.name,
+          purpose: params.purpose,
+          suggestedTimes: params.suggestedTimes,
+          tone: params.tone,
+        });
+        return {
+          success: true as const,
+          email: recipient.email,
+          name: recipient.name,
+          body,
+        };
+      } catch (error) {
+        return {
+          success: false as const,
+          email: recipient.email,
+          error: error instanceof Error ? error.message : 'Failed to generate draft',
+        };
+      }
+    })
+  );
+
+  const drafts: Array<{ email: string; name?: string; body: string }> = [];
+  const failed: Array<{ email: string; error: string }> = [];
+
+  for (const result of results) {
+    if (result.success) {
+      drafts.push({
+        email: result.email,
+        name: result.name,
+        body: result.body,
+      });
+    } else {
+      failed.push({
+        email: result.email,
+        error: result.error,
+      });
+    }
+  }
+
+  return { drafts, failed };
+}
+
+/**
+ * Detect multi-step workflow requests and execute them
+ */
+async function detectAndExecuteWorkflow(
+  message: string,
+  schedule: DaySchedule,
+  preferences: UserPreferences,
+  userId: string
+): Promise<WorkflowChatResponse | null> {
+  // Quick check for potential multi-step requests
+  const multiStepIndicators = [
+    /\b(and|then|also|after that)\b.*\b(schedule|email|block|send|draft|protect)\b/i,
+    /\b(schedule|email|send).+(and|then).+(email|schedule|send)\b/i,
+    /\bfor each\b.*(email|send|draft)/i,
+    /\b(them|each|everyone|all)\b.*(email|send|draft)/i,
+  ];
+
+  const mightBeMultiStep = multiStepIndicators.some(pattern => pattern.test(message));
+  if (!mightBeMultiStep) {
+    return null;
+  }
+
+  try {
+    // Use AI to analyze if this is a multi-step workflow
+    const analysisPrompt = `Analyze if this request requires multiple distinct steps to complete.
+
+Message: "${message}"
+
+Return a JSON object:
+{
+  "isMultiStep": boolean (true only if request explicitly requires 2+ DIFFERENT actions),
+  "steps": [
+    {
+      "type": "schedule" | "email" | "update_preferences" | "analyze",
+      "description": "brief description of this step",
+      "params": { ... relevant parameters }
+    }
+  ]
+}
+
+Rules:
+- "schedule meetings with 3 people" = NOT multi-step (one action: scheduling)
+- "schedule a meeting AND email them" = multi-step (2 actions: schedule + email)
+- "block my mornings and schedule a meeting" = multi-step (2 actions: preferences + schedule)
+- Only return isMultiStep: true if there are genuinely different action types
+
+Examples:
+"Schedule a meeting with Alice tomorrow and send her a confirmation email"
+{"isMultiStep":true,"steps":[{"type":"schedule","description":"Schedule meeting with Alice tomorrow","params":{"attendees":["alice"],"date":"tomorrow"}},{"type":"email","description":"Send confirmation email to Alice","params":{"recipients":["alice"],"purpose":"meeting confirmation"}}]}
+
+"Schedule meetings with Joe, Dan, and Sally next week"
+{"isMultiStep":false,"steps":[{"type":"schedule","description":"Schedule multiple meetings","params":{}}]}`;
+
+    const analysisResponse = await getOpenAIClient().chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 500,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Analyze requests for multi-step workflows. Return JSON only.' },
+        { role: 'user', content: analysisPrompt },
+      ],
+    });
+
+    const analysisText = analysisResponse.choices[0]?.message?.content?.trim();
+    if (!analysisText) {
+      return null;
+    }
+
+    let workflowPlan: WorkflowPlan;
+    try {
+      const cleanText = analysisText
+        .replace(/```json\s*/i, '')
+        .replace(/```\s*$/, '')
+        .replace(/^[^{]*/, '')
+        .replace(/[^}]*$/, '')
+        .trim();
+      workflowPlan = JSON.parse(cleanText);
+    } catch {
+      return null;
+    }
+
+    // Only proceed if genuinely multi-step
+    if (!workflowPlan.isMultiStep || !Array.isArray(workflowPlan.steps) || workflowPlan.steps.length < 2) {
+      return null;
+    }
+
+    // Execute the workflow
+    return await executeWorkflow(workflowPlan, message, schedule, preferences, userId);
+
+  } catch (error) {
+    console.error('Workflow detection error:', error);
+    return null;
+  }
+}
+
+/**
+ * Execute a multi-step workflow
+ */
+async function executeWorkflow(
+  plan: WorkflowPlan,
+  originalMessage: string,
+  schedule: DaySchedule,
+  preferences: UserPreferences,
+  userId: string
+): Promise<WorkflowChatResponse> {
+  const workflow: Workflow = {
+    id: generateId(),
+    steps: plan.steps.map((step, i) => ({
+      id: `step-${i}`,
+      type: step.type,
+      status: 'pending' as const,
+      description: step.description,
+    })),
+    currentStep: 0,
+    status: 'running',
+  };
+
+  const results: string[] = [];
+  const userTimezone = await getUserTimezone(userId);
+
+  for (let i = 0; i < plan.steps.length; i++) {
+    workflow.steps[i].status = 'in_progress';
+    workflow.currentStep = i;
+    const step = plan.steps[i];
+
+    try {
+      switch (step.type) {
+        case 'schedule': {
+          // Use the scheduling handler
+          const scheduleResult = await detectAndHandleSchedulingRequest(
+            originalMessage,
+            schedule,
+            preferences,
+            userId
+          );
+          if (scheduleResult) {
+            workflow.steps[i].result = scheduleResult.message.content;
+            results.push(`Scheduling: ${scheduleResult.message.content}`);
+          } else {
+            throw new Error('Failed to process scheduling request');
+          }
+          break;
+        }
+
+        case 'email': {
+          // Extract email recipients from params or original message
+          const recipients = extractRecipientsFromMessage(originalMessage, step.params);
+          if (recipients.length > 0) {
+            const { drafts, failed } = await generateBatchEmailDrafts({
+              userName: 'User', // TODO: get from session
+              recipients,
+              purpose: step.description || 'follow up',
+              tone: 'neutral',
+            });
+
+            if (drafts.length > 0) {
+              workflow.steps[i].result = { drafts, failed };
+              results.push(`Email drafts: Created ${drafts.length} draft(s) for ${recipients.map(r => r.name || r.email).join(', ')}`);
+            } else {
+              throw new Error('Failed to generate email drafts');
+            }
+          } else {
+            results.push(`Email drafts: Ready to send (recipients to be specified)`);
+          }
+          break;
+        }
+
+        case 'update_preferences': {
+          // Use the protected time handler
+          const prefResult = await detectAndHandleProtectedTimeRequest(
+            originalMessage,
+            preferences,
+            userId
+          );
+          if (prefResult) {
+            workflow.steps[i].result = prefResult.message.content;
+            results.push(`Preferences: ${prefResult.message.content}`);
+          } else {
+            results.push(`Preferences: Noted for your settings`);
+          }
+          break;
+        }
+
+        case 'analyze': {
+          results.push(`Analysis: ${step.description}`);
+          break;
+        }
+      }
+
+      workflow.steps[i].status = 'completed';
+
+    } catch (error) {
+      console.error(`Workflow step ${i} failed:`, error);
+      workflow.steps[i].status = 'failed';
+      workflow.steps[i].error = error instanceof Error ? error.message : 'Step failed';
+      results.push(`${step.description}: Failed`);
+    }
+  }
+
+  workflow.status = workflow.steps.every(s => s.status === 'completed')
+    ? 'completed'
+    : 'failed';
+  workflow.summary = results.join('\n');
+
+  const responseMessage: ChatMessage = {
+    id: generateId(),
+    role: 'assistant',
+    content: `I've completed your request:\n\n${results.join('\n\n')}\n\nLet me know if you need anything else!`,
+    timestamp: new Date(),
+  };
+
+  return {
+    message: responseMessage,
+    suggestedActions: [],
+    workflow,
+  };
+}
+
+/**
+ * Extract recipient information from message and params
+ */
+function extractRecipientsFromMessage(
+  message: string,
+  params: Record<string, unknown>
+): Array<{ email: string; name?: string }> {
+  const recipients: Array<{ email: string; name?: string }> = [];
+
+  // Check params first
+  if (params.recipients && Array.isArray(params.recipients)) {
+    for (const r of params.recipients) {
+      if (typeof r === 'string') {
+        // Could be email or name
+        if (r.includes('@')) {
+          recipients.push({ email: r });
+        } else {
+          recipients.push({ email: '', name: r });
+        }
+      } else if (typeof r === 'object' && r !== null && 'email' in r) {
+        recipients.push(r as { email: string; name?: string });
+      }
+    }
+  }
+
+  // Extract emails from message
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  const foundEmails = message.match(emailRegex) || [];
+  for (const email of foundEmails) {
+    if (!recipients.some(r => r.email === email)) {
+      recipients.push({ email });
+    }
+  }
+
+  return recipients;
+}
+
+/**
+ * Detect and handle protected time requests
+ */
+async function detectAndHandleProtectedTimeRequest(
+  message: string,
+  preferences: UserPreferences,
+  userId?: string
+): Promise<ChatResponse | null> {
+  // Check for protected time patterns
+  const protectedTimePatterns = [
+    /block.*(?:my|the)?\s*(?:mornings?|afternoons?|evenings?|lunch|time)/i,
+    /protect.*(?:my|the)?\s*(?:mornings?|afternoons?|evenings?|time)/i,
+    /don't.*schedule.*(?:during|before|after)/i,
+    /keep.*(?:free|open|clear)/i,
+    /add.*protected\s*time/i,
+    /reserve.*time.*for/i,
+    /block.*(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i,
+  ];
+
+  const isProtectedTimeRequest = protectedTimePatterns.some(pattern => pattern.test(message));
+
+  if (!isProtectedTimeRequest || !userId) {
+    return null;
+  }
+
+  try {
+    // Use AI to extract protected time details
+    const extractionPrompt = `Extract protected time block details from this request. Return ONLY a valid JSON object with these fields:
+- label: string (descriptive name like "Morning workout", "Lunch break", "Focus time")
+- start: string (HH:MM format in 24-hour time, e.g., "06:00" for 6 AM)
+- end: string (HH:MM format in 24-hour time, e.g., "09:00" for 9 AM)
+- days: number[] (array where 0=Sunday, 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday)
+
+Common patterns:
+- "mornings" typically means 06:00-09:00
+- "lunch" typically means 12:00-13:00
+- "afternoons" typically means 13:00-17:00
+- "weekdays" = [1,2,3,4,5]
+- "weekends" = [0,6]
+- "every day" = [0,1,2,3,4,5,6]
+
+Examples:
+Input: "Block my mornings for workouts on weekdays"
+Output: {"label":"Morning workout","start":"06:00","end":"09:00","days":[1,2,3,4,5]}
+
+Input: "Keep 12-1pm free for lunch Monday through Friday"
+Output: {"label":"Lunch break","start":"12:00","end":"13:00","days":[1,2,3,4,5]}
+
+Input: "Don't schedule meetings before 10am"
+Output: {"label":"Morning blocked","start":"06:00","end":"10:00","days":[1,2,3,4,5]}
+
+Message: "${message}"`;
+
+    const extractionResponse = await getOpenAIClient().chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 200,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Extract protected time details as valid JSON only. Be precise with times and days.' },
+        { role: 'user', content: extractionPrompt },
+      ],
+    });
+
+    const extractionText = extractionResponse.choices[0]?.message?.content?.trim();
+
+    if (!extractionText) {
+      throw new Error('No response from AI extraction');
+    }
+
+    let protectedTimeDetails;
+    try {
+      const cleanText = extractionText
+        .replace(/```json\s*/i, '')
+        .replace(/```\s*$/, '')
+        .replace(/^[^{]*/, '')
+        .replace(/[^}]*$/, '')
+        .trim();
+
+      protectedTimeDetails = JSON.parse(cleanText);
+    } catch (parseError) {
+      console.error('Failed to parse protected time extraction:', extractionText, parseError);
+      return null; // Fall back to normal AI response
+    }
+
+    // Validate extracted data
+    if (!protectedTimeDetails.start || !protectedTimeDetails.end || !Array.isArray(protectedTimeDetails.days)) {
+      return null;
+    }
+
+    // Validate time format
+    const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    if (!timeRegex.test(protectedTimeDetails.start) || !timeRegex.test(protectedTimeDetails.end)) {
+      return null;
+    }
+
+    // Validate days
+    if (!protectedTimeDetails.days.every((d: number) => d >= 0 && d <= 6)) {
+      return null;
+    }
+
+    // Create the new protected time
+    const newProtectedTime = {
+      label: protectedTimeDetails.label || 'Protected Time',
+      start: protectedTimeDetails.start,
+      end: protectedTimeDetails.end,
+      days: protectedTimeDetails.days,
+    };
+
+    // Get current preferences and add the new protected time
+    const currentPrefs = await getUserPreferences(userId);
+    const updatedProtectedTimes = [...currentPrefs.protectedTimes, newProtectedTime];
+
+    // Save the updated preferences
+    await updateUserPreferences(userId, { protectedTimes: updatedProtectedTimes });
+
+    // Format days for display
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const daysDisplay = protectedTimeDetails.days.length === 7
+      ? 'every day'
+      : protectedTimeDetails.days.length === 5 && protectedTimeDetails.days.every((d: number) => d >= 1 && d <= 5)
+        ? 'weekdays'
+        : protectedTimeDetails.days.map((d: number) => dayNames[d]).join(', ');
+
+    // Format times for display
+    const formatTime = (time: string) => {
+      const [hours, minutes] = time.split(':').map(Number);
+      const period = hours >= 12 ? 'PM' : 'AM';
+      const displayHours = hours % 12 || 12;
+      return `${displayHours}:${minutes.toString().padStart(2, '0')} ${period}`;
+    };
+
+    const responseMessage: ChatMessage = {
+      id: generateId(),
+      role: 'assistant',
+      content: `I've added "${newProtectedTime.label}" to your protected times. This blocks ${formatTime(newProtectedTime.start)} - ${formatTime(newProtectedTime.end)} on ${daysDisplay}. Meetings won't be scheduled during this time.`,
+      timestamp: new Date(),
+    };
+
+    return {
+      message: responseMessage,
+      suggestedActions: [
+        { label: 'View settings', action: 'open_chat', payload: { redirect: '/settings' } },
+      ],
+    };
+
+  } catch (error) {
+    console.error('Failed to create protected time:', error);
+    return null; // Fall back to normal AI response
+  }
+}
+
+/**
  * Detect and handle scheduling requests by actually creating events
+ * Supports both single meeting and multi-meeting requests
  */
 async function detectAndHandleSchedulingRequest(
   message: string,
@@ -243,28 +729,36 @@ async function detectAndHandleSchedulingRequest(
   }
 
   try {
-    // Use AI to extract event details from the message with better prompting
-    const extractionPrompt = `Extract event details from this scheduling request. Return ONLY a valid JSON object with these exact fields:
-- title: string (brief, descriptive title for the event, max 100 chars)
-- duration: number (duration in minutes: 15, 30, 60, 90, 120, etc.)
-- date: string (YYYY-MM-DD format, or null if not specified)
-- time: string (HH:MM format in 24-hour time, e.g., "14:30" for 2:30 PM, or null if not specified)
-- attendees: string[] (array of valid email addresses only, or empty array)
-- description: string (additional details about the event, or empty string)
-- location: string (meeting location if mentioned, or empty string)
+    // Use AI to extract event details - supports multiple meetings
+    const extractionPrompt = `Extract event details from this scheduling request. The user may be requesting ONE or MULTIPLE meetings.
 
-IMPORTANT: 
+Return a JSON object with:
+- isBatch: boolean (true if multiple distinct meetings are requested, false for single meeting)
+- meetings: array of meeting objects, each with:
+  - title: string (brief, descriptive title, max 100 chars)
+  - duration: number (minutes: 15, 30, 60, 90, 120, etc.)
+  - date: string (YYYY-MM-DD format, or null if not specified)
+  - time: string (HH:MM 24-hour format, or null if not specified)
+  - attendees: string[] (valid email addresses only, or empty array)
+  - description: string (details, or empty string)
+  - location: string (location if mentioned, or empty string)
+
+IMPORTANT:
+- If user mentions multiple people with different times/dates, create SEPARATE meetings for each
+- "meetings with Joe, Dan, and Sally" = 3 separate meetings (isBatch: true)
+- "team meeting with Joe, Dan, Sally" = 1 meeting with all as attendees (isBatch: false)
 - Only include valid email addresses in attendees array
-- Duration should be reasonable (15-480 minutes)
-- Date should be in YYYY-MM-DD format or null
-- Time should be in HH:MM 24-hour format or null
+- Duration should be 15-480 minutes
 
 Examples:
-Input: "Schedule a 30 min call with john@company.com tomorrow at 3pm"
-Output: {"title":"Call with John","duration":30,"date":"2024-01-30","time":"15:00","attendees":["john@company.com"],"description":"","location":""}
+Input: "Schedule meetings with alice@test.com tomorrow at 2pm and bob@test.com on Friday at 10am"
+Output: {"isBatch":true,"meetings":[{"title":"Meeting with Alice","duration":30,"date":"2024-01-30","time":"14:00","attendees":["alice@test.com"],"description":"","location":""},{"title":"Meeting with Bob","duration":30,"date":"2024-02-02","time":"10:00","attendees":["bob@test.com"],"description":"","location":""}]}
 
-Input: "Set up a team meeting next Monday at 2pm for 1 hour"
-Output: {"title":"Team Meeting","duration":60,"date":"2024-01-29","time":"14:00","attendees":[],"description":"","location":""}
+Input: "Set up a team meeting with alice@test.com and bob@test.com Monday at 2pm"
+Output: {"isBatch":false,"meetings":[{"title":"Team Meeting","duration":30,"date":"2024-01-29","time":"14:00","attendees":["alice@test.com","bob@test.com"],"description":"","location":""}]}
+
+Input: "I need to schedule three meetings with Joe, Dan, and Sally next week"
+Output: {"isBatch":true,"meetings":[{"title":"Meeting with Joe","duration":30,"date":null,"time":null,"attendees":[],"description":"","location":""},{"title":"Meeting with Dan","duration":30,"date":null,"time":null,"attendees":[],"description":"","location":""},{"title":"Meeting with Sally","duration":30,"date":null,"time":null,"attendees":[],"description":"","location":""}]}
 
 Message: "${message}"
 
@@ -273,10 +767,10 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
 
     const extractionResponse = await getOpenAIClient().chat.completions.create({
       model: 'gpt-4o',
-      max_tokens: 300, // Increased for better responses
-      temperature: 0.1, // Lower temperature for more consistent parsing
+      max_tokens: 800,
+      temperature: 0.1,
       messages: [
-        { role: 'system', content: 'Extract event details as valid JSON only. Be precise with dates, times, and emails.' },
+        { role: 'system', content: 'Extract event details as valid JSON only. Support both single and multiple meeting requests. Be precise with dates, times, and emails.' },
         { role: 'user', content: extractionPrompt },
       ],
     });
@@ -287,179 +781,96 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       throw new Error('No response from AI extraction');
     }
 
-    let eventDetails;
+    let extractedData;
     try {
-      // Clean up the response - remove markdown code blocks and extra text
       const cleanText = extractionText
         .replace(/```json\s*/i, '')
         .replace(/```\s*$/, '')
-        .replace(/^[^{]*/, '') // Remove any text before the first {
-        .replace(/[^}]*$/, '') // Remove any text after the last }
+        .replace(/^[^{]*/, '')
+        .replace(/[^}]*$/, '')
         .trim();
 
-      eventDetails = JSON.parse(cleanText);
+      extractedData = JSON.parse(cleanText);
 
-      // Validate the parsed data structure
-      if (typeof eventDetails !== 'object' || eventDetails === null) {
+      if (typeof extractedData !== 'object' || extractedData === null) {
         throw new Error('Invalid response structure');
+      }
+
+      // Ensure meetings array exists
+      if (!Array.isArray(extractedData.meetings) || extractedData.meetings.length === 0) {
+        throw new Error('No meetings extracted');
       }
 
     } catch (parseError) {
       console.error('Failed to parse AI extraction response:', extractionText, parseError);
 
-      // Create a basic event from the message if parsing fails
+      // Fallback: create a basic single event
       const titleMatch = message.match(/(?:schedule|set up|create|book|add)\s+(.+?)(?:\s+(?:for|at|on|tomorrow|today|next|this)|\s*$)/i);
       const title = titleMatch ? titleMatch[1].trim() : (message.length > 50 ? message.substring(0, 47) + '...' : message);
 
-      eventDetails = {
-        title: title.substring(0, 100), // Ensure reasonable length
-        duration: 30,
-        date: null,
-        time: null,
-        attendees: [],
-        description: '',
-        location: '',
+      extractedData = {
+        isBatch: false,
+        meetings: [{
+          title: title.substring(0, 100),
+          duration: 30,
+          date: null,
+          time: null,
+          attendees: [],
+          description: '',
+          location: '',
+        }],
       };
     }
 
-    // Validate extracted data
-    if (!eventDetails.title || typeof eventDetails.title !== 'string') {
-      throw new Error('Could not extract valid event title');
-    }
-
-    // Determine date and time with smart defaults and validation
+    const userTimezone = await getUserTimezone(userId);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    let eventDate: Date;
-    let eventTime: string;
-
-    // Parse date
-    if (eventDetails.date && typeof eventDetails.date === 'string') {
-      try {
-        const parsedDate = new Date(eventDetails.date + 'T00:00:00');
-        if (!isNaN(parsedDate.getTime())) {
-          eventDate = parsedDate;
-        } else {
-          throw new Error('Invalid date format');
-        }
-      } catch (error) {
-        console.warn('Invalid date extracted, using smart defaults');
-        eventDate = tomorrow;
-      }
-    } else {
-      // Smart date detection from message
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes('tomorrow')) {
-        eventDate = tomorrow;
-      } else if (lowerMessage.includes('today')) {
-        eventDate = today;
-      } else if (lowerMessage.includes('next monday') || lowerMessage.includes('monday')) {
-        const nextMonday = new Date(today);
-        const daysUntilMonday = (8 - today.getDay()) % 7 || 7;
-        nextMonday.setDate(today.getDate() + daysUntilMonday);
-        eventDate = nextMonday;
-      } else if (lowerMessage.includes('next week')) {
-        const nextWeek = new Date(today);
-        nextWeek.setDate(today.getDate() + 7);
-        eventDate = nextWeek;
-      } else {
-        eventDate = tomorrow; // Default to tomorrow
-      }
-    }
-
-    // Parse time
-    if (eventDetails.time && typeof eventDetails.time === 'string') {
-      const timeMatch = eventDetails.time.match(/^(\d{1,2}):(\d{2})$/);
-      if (timeMatch) {
-        const hours = parseInt(timeMatch[1], 10);
-        const minutes = parseInt(timeMatch[2], 10);
-        if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-          eventTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-        } else {
-          throw new Error('Invalid time format');
-        }
-      } else {
-        throw new Error('Invalid time format');
-      }
-    } else {
-      // Smart time detection or default to working hours start
-      const workingStart = preferences.workingHours?.start;
-      eventTime = workingStart && /^\d{1,2}:\d{2}$/.test(workingStart) ? workingStart : '10:00';
-    }
-
-    // Validate duration
-    const duration = typeof eventDetails.duration === 'number' && eventDetails.duration > 0
-      ? Math.max(15, Math.min(480, eventDetails.duration)) // Clamp between 15min and 8hrs
-      : 30; // Default to 30 minutes
-
-    // Get user's timezone for proper date handling
-    const userTimezone = userId ? await getUserTimezone(userId) : 'America/Los_Angeles';
-
-    // Create event data with timezone-aware validation
-    const eventStart = createDateFromStrings(
-      eventDate.toISOString().split('T')[0],
-      eventTime,
-      userTimezone
+    // Process all meetings
+    const results = await createMultipleMeetings(
+      extractedData.meetings,
+      userId,
+      preferences,
+      userTimezone,
+      message,
+      today,
+      tomorrow
     );
-    const eventEnd = new Date(eventStart.getTime() + duration * 60 * 1000);
 
-    // Ensure the event is not in the past (timezone-aware check)
-    if (isInPast(eventStart, userTimezone)) {
-      // Move to tomorrow at the same time
-      eventStart.setDate(eventStart.getDate() + 1);
-      eventEnd.setDate(eventEnd.getDate() + 1);
+    // Build response message
+    let responseContent: string;
+    if (results.created.length === 0) {
+      throw new Error('Failed to create any meetings');
+    } else if (results.created.length === 1) {
+      const meeting = results.created[0];
+      responseContent = `I've scheduled "${meeting.title}" for ${meeting.start.toLocaleDateString('en-US', { timeZone: userTimezone })} at ${meeting.start.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: userTimezone
+      })} - ${meeting.end.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: userTimezone
+      })}.${meeting.attendees.length > 0 ? ` Invitations sent to ${meeting.attendees.length} attendee(s).` : ''}`;
+    } else {
+      const meetingList = results.created.map(m =>
+        `- "${m.title}" on ${m.start.toLocaleDateString('en-US', { timeZone: userTimezone, weekday: 'short', month: 'short', day: 'numeric' })} at ${m.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: userTimezone })}`
+      ).join('\n');
+      responseContent = `I've scheduled ${results.created.length} meetings:\n\n${meetingList}`;
+
+      if (results.failed.length > 0) {
+        responseContent += `\n\nFailed to schedule ${results.failed.length} meeting(s): ${results.failed.map(f => f.title).join(', ')}`;
+      }
     }
 
-    // Validate attendees
-    const validAttendees = Array.isArray(eventDetails.attendees)
-      ? eventDetails.attendees.filter((email: unknown): email is string => {
-          if (typeof email !== 'string') return false;
-          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-          return emailRegex.test(email) && email.length <= 254;
-        })
-      : [];
-
-    const eventData = {
-      title: eventDetails.title.substring(0, 100).trim(), // Limit title length
-      description: (eventDetails.description || '').substring(0, 1000).trim(), // Limit description
-      start: eventStart,
-      end: eventEnd,
-      timezone: userTimezone,
-      attendees: validAttendees,
-      location: (eventDetails.location || '').substring(0, 200).trim(), // Limit location
-    };
-
-    // Final validation before creating
-    if (!eventData.title) {
-      throw new Error('Event must have a valid title');
-    }
-
-    if (eventData.start >= eventData.end) {
-      throw new Error('Event start time must be before end time');
-    }
-
-    // Create the event with error handling
-    const createdEvent = await createEvent(userId, eventData);
-
-    // Return success response
     const responseMessage: ChatMessage = {
       id: generateId(),
       role: 'assistant',
-      content: `✅ I've scheduled "${createdEvent.title}" for ${eventData.start.toLocaleDateString('en-US', { timeZone: userTimezone })} at ${eventData.start.toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-        timeZone: userTimezone
-      })} - ${eventData.end.toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-        timeZone: userTimezone
-      })}.` + (createdEvent.attendees.length > 0 ? ` Invitations sent to ${createdEvent.attendees.length} attendee(s).` : ''),
+      content: responseContent,
       timestamp: new Date(),
     };
 
@@ -470,8 +881,142 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
 
   } catch (error) {
     console.error('Failed to create event:', error);
-    return null; // Fall back to normal AI response
+    return null;
   }
+}
+
+/**
+ * Helper to create multiple meetings
+ */
+interface ExtractedMeetingData {
+  title: string;
+  duration?: number;
+  date?: string | null;
+  time?: string | null;
+  attendees?: string[];
+  description?: string;
+  location?: string;
+}
+
+async function createMultipleMeetings(
+  meetings: ExtractedMeetingData[],
+  userId: string,
+  preferences: UserPreferences,
+  userTimezone: string,
+  originalMessage: string,
+  today: Date,
+  tomorrow: Date
+): Promise<{
+  created: Array<{ title: string; start: Date; end: Date; attendees: string[] }>;
+  failed: Array<{ title: string; error: string }>;
+}> {
+  const created: Array<{ title: string; start: Date; end: Date; attendees: string[] }> = [];
+  const failed: Array<{ title: string; error: string }> = [];
+
+  for (const meeting of meetings) {
+    try {
+      if (!meeting.title || typeof meeting.title !== 'string') {
+        throw new Error('Invalid meeting title');
+      }
+
+      // Parse date with smart defaults
+      let eventDate: Date;
+      if (meeting.date && typeof meeting.date === 'string') {
+        const parsedDate = new Date(meeting.date + 'T00:00:00');
+        eventDate = !isNaN(parsedDate.getTime()) ? parsedDate : tomorrow;
+      } else {
+        // Smart date detection
+        const lowerMessage = originalMessage.toLowerCase();
+        if (lowerMessage.includes('tomorrow')) {
+          eventDate = tomorrow;
+        } else if (lowerMessage.includes('today')) {
+          eventDate = today;
+        } else if (lowerMessage.includes('next monday') || lowerMessage.includes('monday')) {
+          const nextMonday = new Date(today);
+          const daysUntilMonday = (8 - today.getDay()) % 7 || 7;
+          nextMonday.setDate(today.getDate() + daysUntilMonday);
+          eventDate = nextMonday;
+        } else if (lowerMessage.includes('friday')) {
+          const nextFriday = new Date(today);
+          const daysUntilFriday = (12 - today.getDay()) % 7 || 7;
+          nextFriday.setDate(today.getDate() + daysUntilFriday);
+          eventDate = nextFriday;
+        } else if (lowerMessage.includes('next week')) {
+          const nextWeek = new Date(today);
+          nextWeek.setDate(today.getDate() + 7);
+          eventDate = nextWeek;
+        } else {
+          eventDate = tomorrow;
+        }
+      }
+
+      // Parse time
+      let eventTime: string;
+      if (meeting.time && typeof meeting.time === 'string' && /^(\d{1,2}):(\d{2})$/.test(meeting.time)) {
+        const [hours, minutes] = meeting.time.split(':').map(Number);
+        if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+          eventTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+        } else {
+          eventTime = preferences.workingHours?.start || '10:00';
+        }
+      } else {
+        eventTime = preferences.workingHours?.start || '10:00';
+      }
+
+      const duration = typeof meeting.duration === 'number' && meeting.duration > 0
+        ? Math.max(15, Math.min(480, meeting.duration))
+        : 30;
+
+      const eventStart = createDateFromStrings(
+        eventDate.toISOString().split('T')[0],
+        eventTime,
+        userTimezone
+      );
+      const eventEnd = new Date(eventStart.getTime() + duration * 60 * 1000);
+
+      // Ensure not in past
+      if (isInPast(eventStart, userTimezone)) {
+        eventStart.setDate(eventStart.getDate() + 1);
+        eventEnd.setDate(eventEnd.getDate() + 1);
+      }
+
+      // Validate attendees
+      const validAttendees = Array.isArray(meeting.attendees)
+        ? meeting.attendees.filter((email): email is string => {
+            if (typeof email !== 'string') return false;
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return emailRegex.test(email) && email.length <= 254;
+          })
+        : [];
+
+      const eventData = {
+        title: meeting.title.substring(0, 100).trim(),
+        description: (meeting.description || '').substring(0, 1000).trim(),
+        start: eventStart,
+        end: eventEnd,
+        timezone: userTimezone,
+        attendees: validAttendees,
+        location: (meeting.location || '').substring(0, 200).trim(),
+      };
+
+      const createdEvent = await createEvent(userId, eventData);
+      created.push({
+        title: createdEvent.title,
+        start: eventStart,
+        end: eventEnd,
+        attendees: validAttendees,
+      });
+
+    } catch (error) {
+      console.error(`Failed to create meeting "${meeting.title}":`, error);
+      failed.push({
+        title: meeting.title || 'Unknown meeting',
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  return { created, failed };
 }
 
 /**

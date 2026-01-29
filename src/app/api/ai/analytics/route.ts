@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { getEvents } from '@/lib/google/calendar';
-import { calculateTimeAnalytics } from '@/lib/ai/analytics';
+import { calculateTimeAnalytics, generateActionableRecommendations, calculateAvailableSlots } from '@/lib/ai/analytics';
 import type { UserPreferences } from '@/types/user';
 import type { DaySchedule, CalendarEvent } from '@/types/calendar';
 
@@ -60,10 +60,22 @@ export async function GET(request: NextRequest) {
     // Group events by day
     const schedules = groupEventsByDay(events, startDate, endDate, preferences.timezone);
 
-    // Calculate analytics
-    const analytics = calculateTimeAnalytics(schedules, period, preferences);
+    // Calculate available slots for each day
+    const schedulesWithSlots = schedules.map(schedule => ({
+      ...schedule,
+      availableSlots: calculateAvailableSlots(schedule.events, new Date(schedule.date), preferences),
+    }));
 
-    return NextResponse.json(analytics);
+    // Calculate analytics
+    const analytics = calculateTimeAnalytics(schedulesWithSlots, period, preferences);
+
+    // Generate actionable recommendations
+    const recommendations = generateActionableRecommendations(schedulesWithSlots, preferences);
+
+    return NextResponse.json({
+      ...analytics,
+      recommendations,
+    });
   } catch (error) {
     console.error('Analytics API error:', error);
     return NextResponse.json(
