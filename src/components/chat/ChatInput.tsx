@@ -83,12 +83,15 @@ export function ChatInput({
               text-[var(--text-primary)] text-[15px]
               placeholder:text-[var(--text-tertiary)]
               resize-none
-              focus:outline-none
+              outline-none border-none ring-0
+              focus:outline-none focus:ring-0 focus:border-none
               disabled:cursor-not-allowed
             `}
             style={{
               lineHeight: `${LINE_HEIGHT}px`,
               maxHeight: `${LINE_HEIGHT * MAX_LINES}px`,
+              outline: 'none',
+              boxShadow: 'none',
             }}
           />
 
