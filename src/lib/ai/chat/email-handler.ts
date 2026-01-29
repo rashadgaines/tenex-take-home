@@ -31,23 +31,21 @@ Message: "${message}"
 Return a JSON object:
 {
   "isEmailRequest": boolean (true if the user is asking to draft or send a regular email),
-  "intent": "send" | "draft",
   "recipients": string[] (array of email addresses or names),
   "purpose": string (brief description of the email purpose),
-  "body": string (optional: specific content the user wants to include)
+  "body": string (the SPECIFIC content the user wants to include in the email body, if any)
 }
 
 Rules:
-- If the user says "email Alice", intent is "draft".
-- If the user says "send an email to Alice", intent is "send".
-- Only return isEmailRequest: true for regular emails, NOT for calendar invites or scheduling.`;
+- If user says "Tell Alice I am late", purpose is "Being late" and body is "I am late".
+- Set isEmailRequest to true only for regular emails (Gmail), NOT calendar invites.`;
 
         const response = await getOpenAIClient().chat.completions.create({
             model: 'gpt-4o',
             max_tokens: 400,
             temperature: 0.1,
             messages: [
-                { role: 'system', content: 'Extract email intent and details as JSON only.' },
+                { role: 'system', content: 'Extract email intent and details as JSON only. If the user provides specific text to send, extract it into the "body" field.' },
                 { role: 'user', content: extractionPrompt },
             ],
         });
@@ -67,55 +65,37 @@ Rules:
         }
 
         // Process the request
-        const recipient = extraction.recipients[0]; // For now handle one
-        // Try to find a real email address if it looks like one
+        const recipient = extraction.recipients[0];
         const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
         const emailMatch = recipient.match(emailRegex);
         const targetEmail = emailMatch ? emailMatch[0] : recipient;
+        const hasValidEmail = !!emailMatch;
 
         const emailBody = await generateEmailDraft({
             userName: userName || 'User',
             recipient: targetEmail,
             purpose: extraction.purpose || 'Following up',
+            specificContent: extraction.body,
         });
 
         const subject = generateSubjectLine(extraction.purpose || 'Message');
 
-        if (extraction.intent === 'send' && emailMatch) {
-            // Actually send if intent is send AND we have a valid email
-            await sendEmail(userId, targetEmail, subject, emailBody);
+        const recipientDisplay = hasValidEmail ? `**${targetEmail}**` : `**${targetEmail}** (please provide an email address)`;
 
-            return {
-                message: {
-                    id: generateId(),
-                    role: 'assistant',
-                    content: ` ✓ Email sent to ${targetEmail}\n\n**Subject:** ${subject}\n\n---\n${emailBody}\n---`,
-                    timestamp: new Date(),
-                },
-                executedActions: [
-                    {
-                        id: `action-email-${Date.now()}`,
-                        type: 'email',
-                        label: `Sent email to ${targetEmail}`,
-                        status: 'completed',
-                    },
-                ],
-            };
-        } else {
-            // Draft mode or no valid email found yet
-            return {
-                message: {
-                    id: generateId(),
-                    role: 'assistant',
-                    content: `I've drafted that email for ${targetEmail}:\n\n**Subject:** ${subject}\n\n---\n${emailBody}\n---\n\nWould you like me to send it?`,
-                    timestamp: new Date(),
-                },
-                suggestedActions: [
-                    { label: 'Send it', action: 'open_chat', payload: { message: 'send it' } },
-                    { label: 'Edit draft', action: 'edit', payload: { type: 'email', draft: { to: targetEmail, subject, body: emailBody } } },
-                ],
-            };
-        }
+        return {
+            message: {
+                id: generateId(),
+                role: 'assistant',
+                content: `I've prepared that email for ${recipientDisplay}:\n\n**To:** ${targetEmail}\n**Subject:** ${subject}\n\n---\n${emailBody}\n---\n\n${hasValidEmail ? 'Ready to send this?' : 'I need a valid email address before I can send this. Once you provide it, just say "send it".'}`,
+                timestamp: new Date(),
+            },
+            suggestedActions: hasValidEmail ? [
+                { label: 'Send now', action: 'open_chat', payload: { message: 'send it' } },
+                { label: 'Edit draft', action: 'edit', payload: { type: 'email', draft: { to: targetEmail, subject, body: emailBody } } },
+            ] : [
+                { label: 'Edit draft', action: 'edit', payload: { type: 'email', draft: { to: targetEmail, subject, body: emailBody } } },
+            ],
+        };
 
     } catch (error) {
         console.error('Error handling email request:', error);

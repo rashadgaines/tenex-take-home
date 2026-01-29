@@ -128,8 +128,9 @@ export function buildEmailDraftPrompt(params: {
   purpose: string;
   suggestedTimes?: string[];
   tone?: 'formal' | 'casual' | 'neutral';
+  specificContent?: string;
 }): string {
-  const { userName, recipient, recipientName, purpose, suggestedTimes, tone = 'neutral' } = params;
+  const { userName, recipient, recipientName, purpose, suggestedTimes, tone = 'neutral', specificContent } = params;
 
   const timesSection = suggestedTimes?.length
     ? `\nSuggested times to offer:\n${suggestedTimes.map((t) => `- ${t}`).join('\n')}`
@@ -141,9 +142,12 @@ export function buildEmailDraftPrompt(params: {
     neutral: 'Be professional but personable.',
   };
 
-  return `Draft a brief, professional email for ${userName} to send to ${recipientName || recipient}.
+  const contentSection = specificContent
+    ? `\nSPECIFIC CONTENT FROM USER (YOU MUST USE THIS): ${specificContent}`
+    : `\nPurpose: ${purpose}`;
 
-Purpose: ${purpose}${timesSection}
+  return `Draft a brief, professional email for ${userName} to send to ${recipientName || recipient}.
+${contentSection}${timesSection}
 
 Guidelines:
 - Keep it short (3-5 sentences max)
@@ -151,6 +155,7 @@ Guidelines:
 - ${toneGuidance[tone]}
 - End with a clear ask or next step
 - Don't use overly formal language like "I hope this email finds you well"
+- CRITICAL: If SPECIFIC CONTENT is provided above, use it as the core message. Do not hallucinate or add significant new information or facts. If only a purpose is provided, expand it logically and professionally.
 
 Return only the email body text, no subject line or greeting/signature formatting.`;
 }

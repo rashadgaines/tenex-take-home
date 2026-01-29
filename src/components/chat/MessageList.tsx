@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { ChatMessage as ChatMessageType } from '@/types/ai';
+import type { ChatMessage as ChatMessageType, ActionButton } from '@/types/ai';
 import { ChatMessage } from './ChatMessage';
 import { TypingIndicator } from './TypingIndicator';
 
@@ -12,6 +12,7 @@ interface MessageListProps {
   userName?: string;
   userImage?: string | null;
   className?: string;
+  onAction?: (action: ActionButton) => void;
 }
 
 export function MessageList({
@@ -20,6 +21,7 @@ export function MessageList({
   userName = 'You',
   userImage,
   className = '',
+  onAction,
 }: MessageListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -109,6 +111,7 @@ export function MessageList({
               userName={userName}
               userImage={userImage}
               isNewMessage={newMessageIds.has(message.id)}
+              onAction={onAction}
             />
           ))}
 

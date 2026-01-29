@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MainCanvas } from '@/components/layout';
 import { MessageList, ChatInput } from '@/components/chat';
-import type { ChatMessage, ChatResponse } from '@/types/ai';
+import type { ChatMessage, ChatResponse, ActionButton } from '@/types/ai';
 
 const examplePrompts = [
   {
@@ -121,6 +121,19 @@ function PlanPageContent() {
     }
   }, [searchParams, router]);
 
+  const handleAction = async (action: ActionButton) => {
+    if (action.action === 'open_chat' && (action.payload as any)?.message) {
+      await handleSend((action.payload as any).message);
+    } else if (action.action === 'edit' && (action.payload as any)?.draft) {
+      const draft = (action.payload as any).draft;
+      // For editing, we just pre-fill a prompt, but handleSend will trigger the AI to "think" about the edit
+      await handleSend(`I want to edit the email draft to ${draft.to || 'the recipient'}. Here is the current body: ${draft.body}`);
+    } else if (action.action === 'send_email' || action.label.toLowerCase().includes('send')) {
+      // This is usually handled by 'open_chat' with 'send it' but we can be explicit
+      await handleSend('send it');
+    }
+  };
+
   const handleSend = async (message: string) => {
     if (!message.trim() || isLoading) return;
 
@@ -166,6 +179,7 @@ function PlanPageContent() {
         {
           ...data.message,
           timestamp: new Date(data.message.timestamp),
+          suggestedActions: data.suggestedActions,
         },
       ]);
     } catch (error) {
@@ -329,6 +343,7 @@ function PlanPageContent() {
                   isTyping={isLoading}
                   userName={user?.name || 'You'}
                   userImage={user?.image}
+                  onAction={handleAction}
                   className="h-full"
                 />
               </motion.div>

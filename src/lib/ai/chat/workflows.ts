@@ -1,7 +1,7 @@
 /**
  * Workflow orchestration for multi-step operations
  */
-import { ChatMessage, Workflow, WorkflowPlan, WorkflowChatResponse } from '@/types/ai';
+import { ChatMessage, Workflow, WorkflowPlan, WorkflowChatResponse, ActionButton } from '@/types/ai';
 import { DaySchedule } from '@/types/calendar';
 import { UserPreferences } from '@/types/user';
 import { createDateFromStrings, isInPast } from '../../date-utils';
@@ -250,39 +250,16 @@ export async function executeWorkflow(
               recipients,
               purpose: step.description || 'follow up',
               tone: 'neutral',
+              specificContent: originalMessage,
             });
 
             if (drafts.length > 0) {
-              // Check if we should send immediately or just draft
-              const lowercaseMsg = originalMessage.toLowerCase();
-              const shouldSend = lowercaseMsg.includes('send') && !lowercaseMsg.includes('draft');
+              // ALWAYS draft first for regular emails in workflows to ensure accuracy and user confirmation
+              workflow.steps[i].result = { drafts, failed };
+              const firstDraft = drafts[0];
+              const subject = generateSubjectLine(step.description || 'Meeting Request');
 
-              if (shouldSend) {
-                const results_list: string[] = [];
-                for (const draft of drafts) {
-                  const subject = generateSubjectLine(step.description || 'Meeting Request');
-                  try {
-                    await sendEmail(userId, draft.email, subject, draft.body);
-                    results_list.push(draft.email);
-                  } catch (e) {
-                    console.error(`Failed to send email to ${draft.email}:`, e);
-                    failed.push({ email: draft.email, error: e instanceof Error ? e.message : 'Unknown error' });
-                  }
-                }
-
-                if (results_list.length > 0) {
-                  results.push(`Email: Sent to ${results_list.join(', ')}`);
-                }
-                if (failed.length > 0) {
-                  results.push(`Email: Failed to send to ${failed.map(f => f.email).join(', ')}`);
-                }
-                workflow.steps[i].result = { sent: results_list, failed };
-              } else {
-                workflow.steps[i].result = { drafts, failed };
-                const firstDraft = drafts[0];
-                const subject = generateSubjectLine(step.description || 'Meeting Request');
-
-                results.push(`Email draft created for ${recipients.map(r => r.name || r.email).join(', ')}:
+              results.push(`Email draft created for ${recipients.map(r => r.name || r.email).join(', ')}:
 
 To: ${firstDraft.email}
 Subject: ${subject}
@@ -290,10 +267,10 @@ Subject: ${subject}
 ---
 ${firstDraft.body}
 ---`);
-                if (drafts.length > 1) {
-                  results.push(`(Plus ${drafts.length - 1} more draft(s))`);
-                }
+              if (drafts.length > 1) {
+                results.push(`(Plus ${drafts.length - 1} more draft(s))`);
               }
+              results.push(`\n**Ready to send?** Say "send it" or "looks good".`);
             } else {
               throw new Error('Failed to generate email drafts');
             }
@@ -350,13 +327,33 @@ ${firstDraft.body}
   const responseMessage: ChatMessage = {
     id: generateId(),
     role: 'assistant',
-    content: `${stepsDisplay}\n\n${workflow.summary}\n\n**Done!** Let me know if you need anything else.`,
+    content: `${stepsDisplay}\n\n${workflow.summary}\n\n**Done!** Ready to proceed?`,
     timestamp: new Date(),
   };
 
+  // If there's a pending email draft, suggest sending it
+  const suggestedActions: ActionButton[] = [];
+  const hasEmailDraft = workflow.steps.some(s => s.type === 'email' && (s.result as any)?.drafts?.length > 0);
+  if (hasEmailDraft) {
+    suggestedActions.push({
+      label: 'Send now',
+      action: 'open_chat',
+      payload: { message: 'send it' }
+    });
+    const emailStep = workflow.steps.find(s => s.type === 'email');
+    if ((emailStep?.result as any)?.drafts?.[0]) {
+      const draft = (emailStep?.result as any).drafts[0];
+      suggestedActions.push({
+        label: 'Edit draft',
+        action: 'edit',
+        payload: { type: 'email', draft: { to: draft.email, body: draft.body } }
+      });
+    }
+  }
+
   return {
     message: responseMessage,
-    suggestedActions: [],
+    suggestedActions,
     workflow,
   };
 }

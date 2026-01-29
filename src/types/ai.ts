@@ -7,6 +7,7 @@ export interface ChatMessage {
   content: string;
   timestamp: Date;
   attachments?: MessageAttachment[];
+  suggestedActions?: ActionButton[];
 }
 
 export interface MessageAttachment {

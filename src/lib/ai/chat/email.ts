@@ -14,6 +14,7 @@ export async function generateEmailDraft(params: {
   purpose: string;
   suggestedTimes?: Date[];
   tone?: 'formal' | 'casual' | 'neutral';
+  specificContent?: string;
 }): Promise<string> {
   const timesFormatted = params.suggestedTimes?.map((t) =>
     t.toLocaleString('en-US', {
@@ -32,6 +33,7 @@ export async function generateEmailDraft(params: {
     purpose: params.purpose,
     suggestedTimes: timesFormatted,
     tone: params.tone,
+    specificContent: params.specificContent,
   });
 
   const response = await getOpenAIClient().chat.completions.create({
@@ -55,6 +57,7 @@ export async function generateBatchEmailDrafts(params: {
   purpose: string;
   suggestedTimes?: Date[];
   tone?: 'formal' | 'casual' | 'neutral';
+  specificContent?: string;
 }): Promise<{
   drafts: Array<{ email: string; name?: string; body: string }>;
   failed: Array<{ email: string; error: string }>;
@@ -69,6 +72,7 @@ export async function generateBatchEmailDrafts(params: {
           purpose: params.purpose,
           suggestedTimes: params.suggestedTimes,
           tone: params.tone,
+          specificContent: params.specificContent,
         });
         return {
           success: true as const,

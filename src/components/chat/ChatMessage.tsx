@@ -3,7 +3,7 @@
 import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { format, isToday, isYesterday, isSameDay } from 'date-fns';
-import type { ChatMessage as ChatMessageType } from '@/types/ai';
+import type { ChatMessage as ChatMessageType, ActionButton } from '@/types/ai';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -11,6 +11,7 @@ interface ChatMessageProps {
   userName?: string;
   userImage?: string | null;
   isNewMessage?: boolean;
+  onAction?: (action: ActionButton) => void;
 }
 
 // Simple markdown parser - supports bold, italic, lists, and code blocks
@@ -181,9 +182,11 @@ export function ChatMessage({
   userName = 'You',
   userImage,
   isNewMessage = false,
+  onAction,
 }: ChatMessageProps) {
   const [copied, setCopied] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [loadingAction, setLoadingAction] = useState<string | null>(null);
 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
@@ -201,6 +204,17 @@ export function ChatMessage({
     const timeDiff = new Date(message.timestamp).getTime() - new Date(previousMessage.timestamp).getTime();
     return timeDiff < 2 * 60 * 1000; // 2 minutes
   }, [message, previousMessage]);
+
+  const handleActionClick = async (action: ActionButton) => {
+    if (onAction) {
+      setLoadingAction(action.label);
+      try {
+        await onAction(action);
+      } finally {
+        setLoadingAction(null);
+      }
+    }
+  };
 
   const handleCopy = async () => {
     try {
@@ -276,14 +290,13 @@ export function ChatMessage({
         </div>
 
         {/* Message Content */}
-        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[75%]`}>
+        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[85%]`}>
           {/* Message Bubble */}
           <div
-            className={`relative group rounded-2xl px-4 py-3 ${
-              isUser
-                ? 'bg-[var(--accent-primary)] text-[var(--bg-primary)] rounded-tr-md'
-                : 'bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-tl-md'
-            }`}
+            className={`relative group rounded-2xl px-4 py-3 ${isUser
+              ? 'bg-[var(--accent-primary)] text-[var(--bg-primary)] rounded-tr-md'
+              : 'bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-tl-md'
+              }`}
           >
             <div className={`text-[15px] leading-relaxed ${isAssistant ? 'text-[var(--text-primary)]' : ''}`}>
               {isAssistant ? parseMarkdown(message.content) : message.content}
@@ -311,6 +324,41 @@ export function ChatMessage({
               </motion.button>
             )}
           </div>
+
+          {/* Suggested Actions */}
+          {isAssistant && message.suggestedActions && message.suggestedActions.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {message.suggestedActions.map((action, idx) => {
+                const isLoading = loadingAction === action.label;
+                const isPrimary = action.action === 'send_email' || action.label.toLowerCase().includes('send');
+
+                return (
+                  <motion.button
+                    key={idx}
+                    onClick={() => handleActionClick(action)}
+                    disabled={!!loadingAction}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    className={`
+                      px-4 py-2 text-sm font-medium rounded-xl border transition-all flex items-center gap-2
+                      ${isPrimary
+                        ? 'bg-[var(--accent-primary)] text-[var(--bg-primary)] border-[var(--accent-primary)] hover:bg-[var(--accent-hover)]'
+                        : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] border-[var(--border-light)] hover:border-[var(--border-medium)] hover:bg-[var(--bg-elevated)]'}
+                      ${loadingAction ? 'opacity-70 cursor-not-allowed' : ''}
+                    `}
+                  >
+                    {isLoading && (
+                      <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    )}
+                    {action.label}
+                  </motion.button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Timestamp */}
           {!isGrouped && (
