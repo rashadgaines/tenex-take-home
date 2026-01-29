@@ -217,7 +217,7 @@ async function detectAndHandleSchedulingRequest(
 ): Promise<ChatResponse | null> {
   const lowerMessage = message.toLowerCase();
 
-  // Check for scheduling patterns
+  // Check for scheduling patterns (more comprehensive)
   const schedulingPatterns = [
     /schedule.*meeting/i,
     /set up.*meeting/i,
@@ -228,6 +228,10 @@ async function detectAndHandleSchedulingRequest(
     /add.*event/i,
     /create.*event/i,
     /block.*time/i,
+    /schedule.*appointment/i,
+    /book.*appointment/i,
+    /plan.*meeting/i,
+    /organize.*meeting/i,
   ];
 
   const isSchedulingRequest = schedulingPatterns.some(pattern => pattern.test(lowerMessage));
@@ -237,51 +241,76 @@ async function detectAndHandleSchedulingRequest(
   }
 
   try {
-    // Use AI to extract event details from the message
-    const extractionPrompt = `
-Extract event details from this scheduling request. Return ONLY a valid JSON object with these exact fields:
-- title: string (brief, descriptive title for the event)
-- duration: number (duration in minutes: 15, 30, 60, 90, etc.)
+    // Use AI to extract event details from the message with better prompting
+    const extractionPrompt = `Extract event details from this scheduling request. Return ONLY a valid JSON object with these exact fields:
+- title: string (brief, descriptive title for the event, max 100 chars)
+- duration: number (duration in minutes: 15, 30, 60, 90, 120, etc.)
 - date: string (YYYY-MM-DD format, or null if not specified)
 - time: string (HH:MM format in 24-hour time, e.g., "14:30" for 2:30 PM, or null if not specified)
-- attendees: string[] (array of email addresses only, extract from names if possible, or empty array)
+- attendees: string[] (array of valid email addresses only, or empty array)
 - description: string (additional details about the event, or empty string)
 - location: string (meeting location if mentioned, or empty string)
+
+IMPORTANT: 
+- Only include valid email addresses in attendees array
+- Duration should be reasonable (15-480 minutes)
+- Date should be in YYYY-MM-DD format or null
+- Time should be in HH:MM 24-hour format or null
 
 Examples:
 Input: "Schedule a 30 min call with john@company.com tomorrow at 3pm"
 Output: {"title":"Call with John","duration":30,"date":"2024-01-30","time":"15:00","attendees":["john@company.com"],"description":"","location":""}
 
-Input: "Set up a team meeting next Monday"
-Output: {"title":"Team Meeting","duration":60,"date":"2024-01-29","time":"10:00","attendees":[],"description":"","location":""}
+Input: "Set up a team meeting next Monday at 2pm for 1 hour"
+Output: {"title":"Team Meeting","duration":60,"date":"2024-01-29","time":"14:00","attendees":[],"description":"","location":""}
 
 Message: "${message}"
 
 Current date: ${new Date().toISOString().split('T')[0]}
-Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.end}
-`;
+Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.end}`;
 
     const extractionResponse = await getOpenAIClient().chat.completions.create({
       model: 'gpt-4o',
-      max_tokens: 200,
+      max_tokens: 300, // Increased for better responses
+      temperature: 0.1, // Lower temperature for more consistent parsing
       messages: [
-        { role: 'system', content: 'Extract event details as JSON only.' },
+        { role: 'system', content: 'Extract event details as valid JSON only. Be precise with dates, times, and emails.' },
         { role: 'user', content: extractionPrompt },
       ],
     });
 
-    const extractionText = extractionResponse.choices[0]?.message?.content || '{}';
+    const extractionText = extractionResponse.choices[0]?.message?.content?.trim();
+
+    if (!extractionText) {
+      throw new Error('No response from AI extraction');
+    }
 
     let eventDetails;
     try {
       // Clean up the response - remove markdown code blocks and extra text
-      const cleanText = extractionText.replace(/```json\n?|\n?```/g, '').trim();
+      const cleanText = extractionText
+        .replace(/```json\s*/i, '')
+        .replace(/```\s*$/, '')
+        .replace(/^[^{]*/, '') // Remove any text before the first {
+        .replace(/[^}]*$/, '') // Remove any text after the last }
+        .trim();
+
       eventDetails = JSON.parse(cleanText);
+
+      // Validate the parsed data structure
+      if (typeof eventDetails !== 'object' || eventDetails === null) {
+        throw new Error('Invalid response structure');
+      }
+
     } catch (parseError) {
-      console.error('Failed to parse AI extraction response:', extractionText);
+      console.error('Failed to parse AI extraction response:', extractionText, parseError);
+
       // Create a basic event from the message if parsing fails
+      const titleMatch = message.match(/(?:schedule|set up|create|book|add)\s+(.+?)(?:\s+(?:for|at|on|tomorrow|today|next|this)|\s*$)/i);
+      const title = titleMatch ? titleMatch[1].trim() : (message.length > 50 ? message.substring(0, 47) + '...' : message);
+
       eventDetails = {
-        title: message.length > 50 ? message.substring(0, 47) + '...' : message,
+        title: title.substring(0, 100), // Ensure reasonable length
         duration: 30,
         date: null,
         time: null,
@@ -291,74 +320,122 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       };
     }
 
-    // Determine date and time with smart defaults
+    // Validate extracted data
+    if (!eventDetails.title || typeof eventDetails.title !== 'string') {
+      throw new Error('Could not extract valid event title');
+    }
+
+    // Determine date and time with smart defaults and validation
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    let eventDate: string;
+    let eventDate: Date;
     let eventTime: string;
 
-    if (eventDetails.date) {
-      eventDate = eventDetails.date;
+    // Parse date
+    if (eventDetails.date && typeof eventDetails.date === 'string') {
+      try {
+        const parsedDate = new Date(eventDetails.date + 'T00:00:00');
+        if (!isNaN(parsedDate.getTime())) {
+          eventDate = parsedDate;
+        } else {
+          throw new Error('Invalid date format');
+        }
+      } catch (error) {
+        console.warn('Invalid date extracted, using smart defaults');
+        eventDate = tomorrow;
+      }
     } else {
-      // Check if message mentions "tomorrow", "next week", etc.
+      // Smart date detection from message
       const lowerMessage = message.toLowerCase();
       if (lowerMessage.includes('tomorrow')) {
-        eventDate = tomorrow.toISOString().split('T')[0];
+        eventDate = tomorrow;
       } else if (lowerMessage.includes('today')) {
-        eventDate = today.toISOString().split('T')[0];
+        eventDate = today;
+      } else if (lowerMessage.includes('next monday') || lowerMessage.includes('monday')) {
+        const nextMonday = new Date(today);
+        const daysUntilMonday = (8 - today.getDay()) % 7 || 7;
+        nextMonday.setDate(today.getDate() + daysUntilMonday);
+        eventDate = nextMonday;
+      } else if (lowerMessage.includes('next week')) {
+        const nextWeek = new Date(today);
+        nextWeek.setDate(today.getDate() + 7);
+        eventDate = nextWeek;
       } else {
-        eventDate = tomorrow.toISOString().split('T')[0]; // Default to tomorrow
+        eventDate = tomorrow; // Default to tomorrow
       }
     }
 
-    if (eventDetails.time) {
-      eventTime = eventDetails.time;
+    // Parse time
+    if (eventDetails.time && typeof eventDetails.time === 'string') {
+      const timeMatch = eventDetails.time.match(/^(\d{1,2}):(\d{2})$/);
+      if (timeMatch) {
+        const hours = parseInt(timeMatch[1], 10);
+        const minutes = parseInt(timeMatch[2], 10);
+        if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+          eventTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+        } else {
+          throw new Error('Invalid time format');
+        }
+      } else {
+        throw new Error('Invalid time format');
+      }
     } else {
-      // Default to 10 AM or next available slot during working hours
-      const workingStart = preferences.workingHours.start;
-      eventTime = workingStart || '10:00';
+      // Smart time detection or default to working hours start
+      const workingStart = preferences.workingHours?.start;
+      eventTime = workingStart && /^\d{1,2}:\d{2}$/.test(workingStart) ? workingStart : '10:00';
     }
+
+    // Validate duration
+    const duration = typeof eventDetails.duration === 'number' && eventDetails.duration > 0
+      ? Math.max(15, Math.min(480, eventDetails.duration)) // Clamp between 15min and 8hrs
+      : 30; // Default to 30 minutes
+
+    // Create event data with validation
+    const eventStart = new Date(`${eventDate.toISOString().split('T')[0]}T${eventTime}:00`);
+    const eventEnd = new Date(eventStart.getTime() + duration * 60 * 1000);
+
+    // Ensure the event is not in the past
+    const now = new Date();
+    const minStartTime = new Date(now.getTime() + 15 * 60 * 1000); // At least 15 minutes from now
+
+    if (eventStart <= minStartTime) {
+      // Move to tomorrow at the same time
+      eventStart.setDate(eventStart.getDate() + 1);
+      eventEnd.setDate(eventEnd.getDate() + 1);
+    }
+
+    // Validate attendees
+    const validAttendees = Array.isArray(eventDetails.attendees)
+      ? eventDetails.attendees.filter((email): email is string => {
+          if (typeof email !== 'string') return false;
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          return emailRegex.test(email) && email.length <= 254;
+        })
+      : [];
 
     const eventData = {
-      title: eventDetails.title || (message.length > 50 ? message.substring(0, 47) + '...' : message),
-      description: eventDetails.description || '',
-      start: new Date(`${eventDate}T${eventTime}:00`),
-      end: new Date(`${eventDate}T${eventTime}:00`),
-      attendees: Array.isArray(eventDetails.attendees) ? eventDetails.attendees : [],
-      location: eventDetails.location || '',
+      title: eventDetails.title.substring(0, 100).trim(), // Limit title length
+      description: (eventDetails.description || '').substring(0, 1000).trim(), // Limit description
+      start: eventStart,
+      end: eventEnd,
+      attendees: validAttendees,
+      location: (eventDetails.location || '').substring(0, 200).trim(), // Limit location
     };
 
-    // Set end time based on duration
-    const duration = typeof eventDetails.duration === 'number' ? eventDetails.duration : 30;
-    eventData.end.setMinutes(eventData.end.getMinutes() + duration);
-
-    // Validate the event data
-    const now = new Date();
-    if (eventData.start <= now) {
-      // If the scheduled time is in the past or too soon, move it to tomorrow
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      tomorrow.setHours(eventData.start.getHours(), eventData.start.getMinutes(), 0, 0);
-      eventData.start = tomorrow;
-      eventData.end = new Date(tomorrow.getTime() + duration * 60 * 1000);
+    // Final validation before creating
+    if (!eventData.title) {
+      throw new Error('Event must have a valid title');
     }
 
-    // Ensure duration is reasonable (15 minutes to 8 hours)
-    if (duration < 15 || duration > 480) {
-      eventData.end = new Date(eventData.start.getTime() + 30 * 60 * 1000); // Default to 30 minutes
+    if (eventData.start >= eventData.end) {
+      throw new Error('Event start time must be before end time');
     }
 
-    // Validate attendees are email-like
-    eventData.attendees = eventData.attendees.filter((email: string) =>
-      typeof email === 'string' &&
-      email.includes('@') &&
-      email.length > 5 &&
-      email.length < 254
-    );
-
-    // Create the event
+    // Create the event with error handling
     const createdEvent = await createEvent(userId, eventData);
 
     // Return success response

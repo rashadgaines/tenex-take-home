@@ -5,85 +5,211 @@ import type { UserPreferences } from '@/types/user';
 
 // Create OAuth2 client with token refresh handling
 async function getCalendarClient(userId: string) {
-  const tokens = await getGoogleTokens(userId);
-  
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
-  );
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
 
-  oauth2Client.setCredentials({
-    access_token: tokens.accessToken,
-    refresh_token: tokens.refreshToken,
-  });
+  try {
+    const tokens = await getGoogleTokens(userId);
 
-  // Handle token refresh
-  oauth2Client.on('tokens', async (newTokens) => {
-    if (newTokens.access_token && newTokens.expiry_date) {
-      await updateGoogleTokens(
-        userId,
-        newTokens.access_token,
-        Math.floor(newTokens.expiry_date / 1000)
-      );
+    if (!tokens?.accessToken || !tokens?.refreshToken) {
+      throw new Error('Invalid or missing Google OAuth tokens');
     }
-  });
 
-  return google.calendar({ version: 'v3', auth: oauth2Client });
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET
+    );
+
+    oauth2Client.setCredentials({
+      access_token: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
+    });
+
+    // Handle token refresh with error handling
+    oauth2Client.on('tokens', async (newTokens) => {
+      try {
+        if (newTokens.access_token && newTokens.expiry_date) {
+          await updateGoogleTokens(
+            userId,
+            newTokens.access_token,
+            Math.floor(newTokens.expiry_date / 1000)
+          );
+        }
+      } catch (error) {
+        console.error('Failed to update Google tokens:', error);
+        // Don't throw here as it would break the calendar client
+      }
+    });
+
+    return google.calendar({ version: 'v3', auth: oauth2Client });
+  } catch (error) {
+    console.error('Failed to create calendar client:', error);
+    throw new Error('Unable to authenticate with Google Calendar. Please re-authenticate.');
+  }
 }
 
 // Map Google Calendar event to our CalendarEvent type
 function mapGoogleEvent(event: calendar_v3.Schema$Event): CalendarEvent {
-  const attendees: Attendee[] = (event.attendees || []).map((a) => ({
-    email: a.email || '',
-    name: a.displayName ?? undefined,
-    responseStatus: (a.responseStatus as Attendee['responseStatus']) || 'needsAction',
-  }));
+  if (!event?.id) {
+    throw new Error('Invalid event: missing ID');
+  }
 
-  // Determine category based on event properties
+  // Validate and map attendees with proper email validation
+  const attendees: Attendee[] = (event.attendees || [])
+    .filter((a) => a?.email && typeof a.email === 'string' && a.email.includes('@'))
+    .map((a) => ({
+      email: a.email!,
+      name: a.displayName ?? undefined,
+      responseStatus: (a.responseStatus as Attendee['responseStatus']) || 'needsAction',
+    }));
+
+  // Determine category based on event properties with better logic
   let category: CalendarEvent['category'] = 'meeting';
-  const title = event.summary?.toLowerCase() || '';
+  const title = (event.summary || '').toLowerCase();
+  const description = (event.description || '').toLowerCase();
 
-  if (title.includes('focus') || title.includes('heads down') || title.includes('deep work')) {
+  // Check for focus/deep work indicators
+  if (title.includes('focus') || title.includes('heads down') || title.includes('deep work') ||
+      title.includes('no meetings') || title.includes('do not disturb')) {
     category = 'focus';
-  } else if (title.includes('personal') || title.includes('lunch') || title.includes('break')) {
+  }
+  // Check for personal indicators
+  else if (title.includes('personal') || title.includes('lunch') || title.includes('break') ||
+           title.includes('vacation') || title.includes('pto') || title.includes('holiday')) {
     category = 'personal';
-  } else if (event.organizer?.self === false) {
+  }
+  // External meetings (not organized by self)
+  else if (event.organizer?.self === false) {
     category = 'external';
   }
 
+  // Validate and parse dates
+  const startDateTime = event.start?.dateTime || event.start?.date;
+  const endDateTime = event.end?.dateTime || event.end?.date;
+
+  if (!startDateTime || !endDateTime) {
+    throw new Error(`Invalid event dates for event ${event.id}`);
+  }
+
+  const start = new Date(startDateTime);
+  const end = new Date(endDateTime);
+
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    throw new Error(`Invalid date format for event ${event.id}`);
+  }
+
+  // Extract meeting link from various sources
+  let meetingLink: string | undefined;
+  if (event.hangoutLink) {
+    meetingLink = event.hangoutLink;
+  } else if (event.conferenceData?.entryPoints) {
+    const meetEntry = event.conferenceData.entryPoints.find(
+      (entry) => entry.uri && (entry.uri.includes('meet.google') || entry.uri.includes('hangouts'))
+    );
+    meetingLink = meetEntry?.uri;
+  }
+
   return {
-    id: event.id || '',
-    title: event.summary || 'Untitled',
-    description: event.description ?? undefined,
-    start: new Date(event.start?.dateTime || event.start?.date || ''),
-    end: new Date(event.end?.dateTime || event.end?.date || ''),
+    id: event.id,
+    title: event.summary || 'Untitled Event',
+    description: event.description || undefined,
+    start,
+    end,
     attendees,
-    location: event.location ?? undefined,
-    meetingLink: event.hangoutLink ?? event.conferenceData?.entryPoints?.[0]?.uri ?? undefined,
+    location: event.location || undefined,
+    meetingLink,
     isAllDay: !event.start?.dateTime,
     category,
     hasAgenda: !!(event.description && event.description.length > 50),
   };
 }
 
-// Fetch events for a date range
+// Fetch events for a date range with error handling and retry logic
 export async function getEvents(
   userId: string,
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  maxRetries: number = 3
 ): Promise<CalendarEvent[]> {
-  const calendar = await getCalendarClient(userId);
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
 
-  const response = await calendar.events.list({
-    calendarId: 'primary',
-    timeMin: startDate.toISOString(),
-    timeMax: endDate.toISOString(),
-    singleEvents: true,
-    orderBy: 'startTime',
-    maxResults: 250,
-  });
+  if (!(startDate instanceof Date) || !(endDate instanceof Date)) {
+    throw new Error('Valid start and end dates are required');
+  }
 
-  return (response.data.items || []).map(mapGoogleEvent);
+  if (startDate >= endDate) {
+    throw new Error('Start date must be before end date');
+  }
+
+  // Limit date range to prevent excessive API calls
+  const maxRangeDays = 90; // 3 months
+  const rangeDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  if (rangeDays > maxRangeDays) {
+    throw new Error(`Date range too large. Maximum ${maxRangeDays} days allowed.`);
+  }
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const calendar = await getCalendarClient(userId);
+
+      const response = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: startDate.toISOString(),
+        timeMax: endDate.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 250, // Google Calendar API limit
+        showDeleted: false,
+        q: undefined, // No search query
+      });
+
+      if (!response.data?.items) {
+        console.warn('No events returned from Google Calendar API');
+        return [];
+      }
+
+      // Map events with error handling for individual events
+      const validEvents: CalendarEvent[] = [];
+      for (const event of response.data.items) {
+        try {
+          const mappedEvent = mapGoogleEvent(event);
+          validEvents.push(mappedEvent);
+        } catch (mappingError) {
+          console.warn(`Failed to map event ${event.id}:`, mappingError);
+          // Continue with other events
+        }
+      }
+
+      return validEvents;
+
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`Calendar API attempt ${attempt}/${maxRetries} failed:`, error);
+
+      // Check for specific error types
+      if (error instanceof Error) {
+        if (error.message.includes('access_denied') || error.message.includes('invalid_grant')) {
+          throw new Error('Google Calendar access denied. Please re-authenticate.');
+        }
+        if (error.message.includes('quota') || error.message.includes('rate_limit')) {
+          throw new Error('Google Calendar API quota exceeded. Please try again later.');
+        }
+      }
+
+      // Wait before retry (exponential backoff)
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(`Failed to fetch calendar events after ${maxRetries} attempts: ${lastError?.message}`);
 }
 
 // Get today's schedule
@@ -288,7 +414,7 @@ export async function getAvailability(
   return availableSlots;
 }
 
-// Create a new calendar event
+// Create a new calendar event with comprehensive validation
 export async function createEvent(
   userId: string,
   event: {
@@ -298,32 +424,147 @@ export async function createEvent(
     end: Date;
     attendees?: string[];
     location?: string;
-  }
+  },
+  maxRetries: number = 3
 ): Promise<CalendarEvent> {
-  const calendar = await getCalendarClient(userId);
+  // Input validation
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
 
-  const response = await calendar.events.insert({
-    calendarId: 'primary',
-    requestBody: {
-      summary: event.title,
-      description: event.description,
-      start: {
-        dateTime: event.start.toISOString(),
-      },
-      end: {
-        dateTime: event.end.toISOString(),
-      },
-      attendees: event.attendees?.map((email) => ({ email })),
-      location: event.location,
-      conferenceData: {
-        createRequest: {
-          requestId: 'meet-' + Date.now().toString(),
-          conferenceSolutionKey: { type: 'hangoutsMeet' },
+  if (!event?.title?.trim()) {
+    throw new Error('Event title is required');
+  }
+
+  if (!(event.start instanceof Date) || !(event.end instanceof Date)) {
+    throw new Error('Valid start and end dates are required');
+  }
+
+  if (isNaN(event.start.getTime()) || isNaN(event.end.getTime())) {
+    throw new Error('Invalid date format');
+  }
+
+  if (event.start >= event.end) {
+    throw new Error('Event start time must be before end time');
+  }
+
+  // Validate duration (max 8 hours)
+  const durationMs = event.end.getTime() - event.start.getTime();
+  const maxDurationMs = 8 * 60 * 60 * 1000; // 8 hours
+  if (durationMs > maxDurationMs) {
+    throw new Error('Event duration cannot exceed 8 hours');
+  }
+
+  // Validate attendees
+  const validAttendees = (event.attendees || [])
+    .filter((email): email is string => {
+      if (typeof email !== 'string') return false;
+      if (!email.includes('@')) return false;
+      if (email.length < 5 || email.length > 254) return false;
+      // Basic email regex validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return emailRegex.test(email);
+    });
+
+  // Check for duplicate attendees
+  const uniqueAttendees = [...new Set(validAttendees)];
+
+  if (uniqueAttendees.length !== validAttendees.length) {
+    console.warn('Duplicate attendees removed from event creation');
+  }
+
+  // Validate title length
+  const title = event.title.trim();
+  if (title.length > 1000) {
+    throw new Error('Event title is too long (maximum 1000 characters)');
+  }
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const calendar = await getCalendarClient(userId);
+
+      // Prepare request body
+      const requestBody: any = {
+        summary: title,
+        description: event.description?.trim() || undefined,
+        start: {
+          dateTime: event.start.toISOString(),
         },
-      },
-    },
-    conferenceDataVersion: 1,
-  });
+        end: {
+          dateTime: event.end.toISOString(),
+        },
+      };
 
-  return mapGoogleEvent(response.data);
+      // Add attendees if any
+      if (uniqueAttendees.length > 0) {
+        requestBody.attendees = uniqueAttendees.map(email => ({ email }));
+      }
+
+      // Add location if provided
+      if (event.location?.trim()) {
+        requestBody.location = event.location.trim();
+      }
+
+      // Try to create Google Meet conference (optional)
+      try {
+        requestBody.conferenceData = {
+          createRequest: {
+            requestId: `meet-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            conferenceSolutionKey: { type: 'hangoutsMeet' },
+          },
+        };
+      } catch (conferenceError) {
+        console.warn('Could not create Google Meet conference:', conferenceError);
+        // Continue without conference
+      }
+
+      const response = await calendar.events.insert({
+        calendarId: 'primary',
+        requestBody,
+        conferenceDataVersion: requestBody.conferenceData ? 1 : undefined,
+        sendUpdates: uniqueAttendees.length > 0 ? 'all' : 'none', // Send invites if there are attendees
+      });
+
+      if (!response.data) {
+        throw new Error('No event data returned from Google Calendar API');
+      }
+
+      return mapGoogleEvent(response.data);
+
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`Event creation attempt ${attempt}/${maxRetries} failed:`, error);
+
+      // Check for specific error types
+      if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+
+        if (message.includes('access_denied') || message.includes('insufficient_permissions')) {
+          throw new Error('Insufficient permissions to create calendar events. Please check your Google Calendar access.');
+        }
+
+        if (message.includes('quota') || message.includes('rate_limit')) {
+          throw new Error('Google Calendar API quota exceeded. Please try again later.');
+        }
+
+        if (message.includes('invalid_request') || message.includes('invalid_value')) {
+          throw new Error('Invalid event data. Please check your input and try again.');
+        }
+
+        if (message.includes('forbidden') || message.includes('permission')) {
+          throw new Error('Unable to create event. Please check your calendar permissions.');
+        }
+      }
+
+      // Wait before retry (exponential backoff)
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw new Error(`Failed to create calendar event after ${maxRetries} attempts: ${lastError?.message}`);
 }
