@@ -11,6 +11,8 @@ import { getOpenAIClient, generateId, cleanJsonResponse } from './utils';
 import { detectAndHandleSchedulingRequest } from './scheduling';
 import { detectAndHandleProtectedTimeRequest } from './protected-time';
 import { generateBatchEmailDrafts } from './email';
+import { sendEmail } from '@/lib/google/gmail';
+import { generateSubjectLine } from '@/lib/email/subject';
 
 /**
  * Detect multi-step workflow requests and execute them
@@ -35,7 +37,7 @@ export async function detectAndExecuteWorkflow(
   // Only consider it multi-step if it has BOTH a scheduling action AND a separate email/preference action
   const hasScheduleAction = /\b(schedule|book|set up|create)\s+(a\s+)?(meeting|call|event)/i.test(lowerMessage);
   const hasEmailAction = /\b(email|send|draft|write).+(to|for|them|her|him)\b/i.test(lowerMessage) ||
-                         /\b(and|then)\s+(email|send|draft)/i.test(lowerMessage);
+    /\b(and|then)\s+(email|send|draft)/i.test(lowerMessage);
   const hasPreferenceAction = /\b(block|protect)\s+(my|the)?\s*(morning|afternoon|lunch|time)/i.test(lowerMessage);
 
   // Must have at least two different action types
@@ -47,7 +49,7 @@ export async function detectAndExecuteWorkflow(
 
   // Additional check: must have explicit connectors between actions
   const hasExplicitConnector = /\b(and\s+then|then\s+also|and\s+also|after\s+that|,\s*then)\b/i.test(lowerMessage) ||
-                               /\b(schedule|book).+\b(and|then)\b.+(email|send|draft)/i.test(lowerMessage);
+    /\b(schedule|book).+\b(and|then)\b.+(email|send|draft)/i.test(lowerMessage);
 
   if (!hasExplicitConnector) {
     return null;
@@ -215,10 +217,10 @@ export async function executeWorkflow(
             // Validate attendees
             const validAttendees = Array.isArray(meetingParams.attendees)
               ? meetingParams.attendees.filter((email): email is string => {
-                  if (typeof email !== 'string') return false;
-                  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-                  return emailRegex.test(email);
-                })
+                if (typeof email !== 'string') return false;
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                return emailRegex.test(email);
+              })
               : [];
 
             const eventData = {
@@ -251,13 +253,52 @@ export async function executeWorkflow(
             });
 
             if (drafts.length > 0) {
-              workflow.steps[i].result = { drafts, failed };
-              results.push(`Email drafts: Created ${drafts.length} draft(s) for ${recipients.map(r => r.name || r.email).join(', ')}`);
+              // Check if we should send immediately or just draft
+              const lowercaseMsg = originalMessage.toLowerCase();
+              const shouldSend = lowercaseMsg.includes('send') && !lowercaseMsg.includes('draft');
+
+              if (shouldSend) {
+                const results_list: string[] = [];
+                for (const draft of drafts) {
+                  const subject = generateSubjectLine(step.description || 'Meeting Request');
+                  try {
+                    await sendEmail(userId, draft.email, subject, draft.body);
+                    results_list.push(draft.email);
+                  } catch (e) {
+                    console.error(`Failed to send email to ${draft.email}:`, e);
+                    failed.push({ email: draft.email, error: e instanceof Error ? e.message : 'Unknown error' });
+                  }
+                }
+
+                if (results_list.length > 0) {
+                  results.push(`Email: Sent to ${results_list.join(', ')}`);
+                }
+                if (failed.length > 0) {
+                  results.push(`Email: Failed to send to ${failed.map(f => f.email).join(', ')}`);
+                }
+                workflow.steps[i].result = { sent: results_list, failed };
+              } else {
+                workflow.steps[i].result = { drafts, failed };
+                const firstDraft = drafts[0];
+                const subject = generateSubjectLine(step.description || 'Meeting Request');
+
+                results.push(`Email draft created for ${recipients.map(r => r.name || r.email).join(', ')}:
+
+To: ${firstDraft.email}
+Subject: ${subject}
+
+---
+${firstDraft.body}
+---`);
+                if (drafts.length > 1) {
+                  results.push(`(Plus ${drafts.length - 1} more draft(s))`);
+                }
+              }
             } else {
               throw new Error('Failed to generate email drafts');
             }
           } else {
-            results.push(`Email drafts: Ready to send (recipients to be specified)`);
+            results.push(`Email: Ready (recipients to be specified)`);
           }
           break;
         }
@@ -309,7 +350,7 @@ export async function executeWorkflow(
   const responseMessage: ChatMessage = {
     id: generateId(),
     role: 'assistant',
-    content: `${stepsDisplay}\n\n**Done!** Let me know if you need anything else.`,
+    content: `${stepsDisplay}\n\n${workflow.summary}\n\n**Done!** Let me know if you need anything else.`,
     timestamp: new Date(),
   };
 
