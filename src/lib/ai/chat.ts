@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { createDateFromStrings, getUserTimezoneFromDb, isInPast } from '../date-utils';
 import {
   ChatMessage,
   ChatRequest,
@@ -394,15 +395,19 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       ? Math.max(15, Math.min(480, eventDetails.duration)) // Clamp between 15min and 8hrs
       : 30; // Default to 30 minutes
 
-    // Create event data with validation
-    const eventStart = new Date(`${eventDate.toISOString().split('T')[0]}T${eventTime}:00`);
+    // Get user's timezone for proper date handling
+    const userTimezone = userId ? await getUserTimezoneFromDb(userId) : 'America/Los_Angeles';
+
+    // Create event data with timezone-aware validation
+    const eventStart = createDateFromStrings(
+      eventDate.toISOString().split('T')[0],
+      eventTime,
+      userTimezone
+    );
     const eventEnd = new Date(eventStart.getTime() + duration * 60 * 1000);
 
-    // Ensure the event is not in the past
-    const now = new Date();
-    const minStartTime = new Date(now.getTime() + 15 * 60 * 1000); // At least 15 minutes from now
-
-    if (eventStart <= minStartTime) {
+    // Ensure the event is not in the past (timezone-aware check)
+    if (isInPast(eventStart, userTimezone)) {
       // Move to tomorrow at the same time
       eventStart.setDate(eventStart.getDate() + 1);
       eventEnd.setDate(eventEnd.getDate() + 1);
@@ -410,7 +415,7 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
 
     // Validate attendees
     const validAttendees = Array.isArray(eventDetails.attendees)
-      ? eventDetails.attendees.filter((email): email is string => {
+      ? eventDetails.attendees.filter((email: unknown): email is string => {
           if (typeof email !== 'string') return false;
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
           return emailRegex.test(email) && email.length <= 254;
@@ -422,6 +427,7 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       description: (eventDetails.description || '').substring(0, 1000).trim(), // Limit description
       start: eventStart,
       end: eventEnd,
+      timezone: userTimezone,
       attendees: validAttendees,
       location: (eventDetails.location || '').substring(0, 200).trim(), // Limit location
     };
@@ -442,14 +448,16 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
     const responseMessage: ChatMessage = {
       id: generateId(),
       role: 'assistant',
-      content: `✅ I've scheduled "${createdEvent.title}" for ${eventData.start.toLocaleDateString()} at ${eventData.start.toLocaleTimeString('en-US', {
+      content: `✅ I've scheduled "${createdEvent.title}" for ${eventData.start.toLocaleDateString('en-US', { timeZone: userTimezone })} at ${eventData.start.toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit',
-        hour12: true
+        hour12: true,
+        timeZone: userTimezone
       })} - ${eventData.end.toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit',
-        hour12: true
+        hour12: true,
+        timeZone: userTimezone
       })}.` + (createdEvent.attendees.length > 0 ? ` Invitations sent to ${createdEvent.attendees.length} attendee(s).` : ''),
       timestamp: new Date(),
     };

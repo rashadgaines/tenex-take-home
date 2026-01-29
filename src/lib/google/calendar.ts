@@ -2,6 +2,16 @@ import { google, calendar_v3 } from 'googleapis';
 import { getGoogleTokens, updateGoogleTokens } from '../auth';
 import type { CalendarEvent, Attendee, DaySchedule, TimeSlot } from '@/types/calendar';
 import type { UserPreferences } from '@/types/user';
+import {
+  parseGoogleDate,
+  formatForGoogleCalendar,
+  getUserTimezoneFromDb,
+  startOfDayInTimezone,
+  endOfDayInTimezone,
+  isSameDayInTimezone,
+  toUtcISOString,
+  DEFAULT_TIMEZONE
+} from '../date-utils';
 
 // Create OAuth2 client with token refresh handling
 async function getCalendarClient(userId: string) {
@@ -50,10 +60,13 @@ async function getCalendarClient(userId: string) {
 }
 
 // Map Google Calendar event to our CalendarEvent type
-function mapGoogleEvent(event: calendar_v3.Schema$Event): CalendarEvent {
+async function mapGoogleEvent(event: calendar_v3.Schema$Event, userId: string): Promise<CalendarEvent> {
   if (!event?.id) {
     throw new Error('Invalid event: missing ID');
   }
+
+  // Get user's timezone for proper date parsing
+  const userTimezone = await getUserTimezoneFromDb(userId);
 
   // Validate and map attendees with proper email validation
   const attendees: Attendee[] = (event.attendees || [])
@@ -84,19 +97,34 @@ function mapGoogleEvent(event: calendar_v3.Schema$Event): CalendarEvent {
     category = 'external';
   }
 
-  // Validate and parse dates
-  const startDateTime = event.start?.dateTime || event.start?.date;
-  const endDateTime = event.end?.dateTime || event.end?.date;
+  // Parse dates using timezone-aware parsing
+  let start: Date;
+  let end: Date;
+  let isAllDay: boolean;
 
-  if (!startDateTime || !endDateTime) {
-    throw new Error(`Invalid event dates for event ${event.id}`);
-  }
+  try {
+    if (event.start?.dateTime) {
+      // Timed event - Google provides ISO string with timezone
+      start = new Date(event.start.dateTime);
+      end = new Date(event.end?.dateTime || '');
+      isAllDay = false;
+    } else if (event.start?.date) {
+      // All-day event - Google provides date string (YYYY-MM-DD)
+      // Convert to start of day in user's timezone, then to UTC
+      const startOfDay = startOfDayInTimezone(event.start.date, userTimezone);
+      const endOfDay = endOfDayInTimezone(event.end?.date || event.start.date, userTimezone);
+      start = startOfDay;
+      end = endOfDay;
+      isAllDay = true;
+    } else {
+      throw new Error('Invalid event dates: no dateTime or date provided');
+    }
 
-  const start = new Date(startDateTime);
-  const end = new Date(endDateTime);
-
-  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-    throw new Error(`Invalid date format for event ${event.id}`);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new Error('Invalid date format');
+    }
+  } catch (error) {
+    throw new Error(`Invalid date format for event ${event.id}: ${error}`);
   }
 
   // Extract meeting link from various sources
@@ -114,14 +142,17 @@ function mapGoogleEvent(event: calendar_v3.Schema$Event): CalendarEvent {
     id: event.id,
     title: event.summary || 'Untitled Event',
     description: event.description || undefined,
-    start,
-    end,
+    start, // UTC Date
+    end, // UTC Date
+    timezone: userTimezone,
     attendees,
     location: event.location || undefined,
     meetingLink,
-    isAllDay: !event.start?.dateTime,
+    isAllDay,
     category,
     hasAgenda: !!(event.description && event.description.length > 50),
+    calendarId: 'primary', // Default to primary calendar
+    recurrence: event.recurrence || [],
   };
 }
 
@@ -130,6 +161,7 @@ export async function getEvents(
   userId: string,
   startDate: Date,
   endDate: Date,
+  timezone?: string,
   maxRetries: number = 3
 ): Promise<CalendarEvent[]> {
   if (!userId) {
@@ -143,6 +175,9 @@ export async function getEvents(
   if (startDate >= endDate) {
     throw new Error('Start date must be before end date');
   }
+
+  // Get user's timezone if not provided
+  const userTimezone = timezone || await getUserTimezoneFromDb(userId);
 
   // Limit date range to prevent excessive API calls
   const maxRangeDays = 90; // 3 months
@@ -159,13 +194,14 @@ export async function getEvents(
 
       const response = await calendar.events.list({
         calendarId: 'primary',
-        timeMin: startDate.toISOString(),
-        timeMax: endDate.toISOString(),
+        timeMin: toUtcISOString(startDate, userTimezone),
+        timeMax: toUtcISOString(endDate, userTimezone),
         singleEvents: true,
         orderBy: 'startTime',
         maxResults: 250, // Google Calendar API limit
         showDeleted: false,
         q: undefined, // No search query
+        timeZone: userTimezone, // Request events in user's timezone
       });
 
       if (!response.data?.items) {
@@ -177,7 +213,7 @@ export async function getEvents(
       const validEvents: CalendarEvent[] = [];
       for (const event of response.data.items) {
         try {
-          const mappedEvent = mapGoogleEvent(event);
+          const mappedEvent = await mapGoogleEvent(event, userId);
           validEvents.push(mappedEvent);
         } catch (mappingError) {
           console.warn(`Failed to map event ${event.id}:`, mappingError);
@@ -217,18 +253,17 @@ export async function getTodaySchedule(
   userId: string,
   preferences: UserPreferences
 ): Promise<DaySchedule> {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const userTimezone = preferences.timezone;
+  const today = startOfDayInTimezone(new Date(), userTimezone);
+  const tomorrow = endOfDayInTimezone(new Date(), userTimezone);
 
-  const events = await getEvents(userId, today, tomorrow);
+  const events = await getEvents(userId, today, tomorrow, userTimezone);
   const availableSlots = calculateAvailableSlots(events, today, preferences);
   const stats = calculateDayStats(events, availableSlots, preferences);
 
   return {
     date: today,
+    timezone: userTimezone,
     events,
     availableSlots,
     stats,
@@ -240,31 +275,40 @@ export async function getWeekSchedule(
   userId: string,
   preferences: UserPreferences
 ): Promise<DaySchedule[]> {
+  const userTimezone = preferences.timezone;
   const today = new Date();
-  const startOfWeek = new Date(today);
-  startOfWeek.setDate(today.getDate() - today.getDay()); // Sunday
+  const weekStartsOn = preferences.weekStartsOn || 0; // 0 = Sunday
+
+  // Calculate start of week in user's timezone
+  const zonedToday = new Date(today.toLocaleString('en-US', { timeZone: userTimezone }));
+  const startOfWeek = new Date(zonedToday);
+  startOfWeek.setDate(zonedToday.getDate() - zonedToday.getDay() + weekStartsOn);
   startOfWeek.setHours(0, 0, 0, 0);
 
-  const endOfWeek = new Date(startOfWeek);
-  endOfWeek.setDate(startOfWeek.getDate() + 7);
+  // Convert back to UTC for API calls
+  const startOfWeekUtc = startOfDayInTimezone(startOfWeek, userTimezone);
+  const endOfWeekUtc = new Date(startOfWeekUtc);
+  endOfWeekUtc.setDate(startOfWeekUtc.getDate() + 7);
 
-  const events = await getEvents(userId, startOfWeek, endOfWeek);
+  const events = await getEvents(userId, startOfWeekUtc, endOfWeekUtc, userTimezone);
   const schedules: DaySchedule[] = [];
 
   for (let i = 0; i < 7; i++) {
-    const date = new Date(startOfWeek);
-    date.setDate(startOfWeek.getDate() + i);
-    
-    const dayEvents = events.filter((e) => {
-      const eventDate = new Date(e.start);
-      return eventDate.toDateString() === date.toDateString();
-    });
+    const dayStart = new Date(startOfWeekUtc);
+    dayStart.setDate(startOfWeekUtc.getDate() + i);
+    const dayEnd = endOfDayInTimezone(dayStart, userTimezone);
 
-    const availableSlots = calculateAvailableSlots(dayEvents, date, preferences);
+    // Filter events for this day using timezone-aware comparison
+    const dayEvents = events.filter((event) =>
+      isSameDayInTimezone(event.start, dayStart, userTimezone)
+    );
+
+    const availableSlots = calculateAvailableSlots(dayEvents, dayStart, preferences);
     const stats = calculateDayStats(dayEvents, availableSlots, preferences);
 
     schedules.push({
-      date,
+      date: dayStart,
+      timezone: userTimezone,
       events: dayEvents,
       availableSlots,
       stats,
@@ -281,37 +325,41 @@ export function calculateAvailableSlots(
   preferences: UserPreferences
 ): TimeSlot[] {
   const slots: TimeSlot[] = [];
-  const dayOfWeek = date.getDay();
+  const userTimezone = preferences.timezone;
 
-  // Parse working hours
+  // Get the day of week in user's timezone
+  const zonedDate = new Date(date.toLocaleString('en-US', { timeZone: userTimezone }));
+  const dayOfWeek = zonedDate.getDay();
+
+  // Parse working hours and create timezone-aware Date objects
   const [startHour, startMin] = preferences.workingHours.start.split(':').map(Number);
   const [endHour, endMin] = preferences.workingHours.end.split(':').map(Number);
 
-  const workStart = new Date(date);
-  workStart.setHours(startHour, startMin, 0, 0);
+  // Create working hours in user's timezone
+  const workStartStr = `${date.toISOString().split('T')[0]}T${preferences.workingHours.start}:00`;
+  const workEndStr = `${date.toISOString().split('T')[0]}T${preferences.workingHours.end}:00`;
 
-  const workEnd = new Date(date);
-  workEnd.setHours(endHour, endMin, 0, 0);
+  const workStart = new Date(workStartStr);
+  const workEnd = new Date(workEndStr);
 
   // Filter out protected times for this day
   const protectedTimes = preferences.protectedTimes.filter((pt) =>
-    pt.days.includes(dayOfWeek)
+    pt.daysOfWeek.includes(dayOfWeek)
   );
 
   // Get all blocked time ranges (events + protected times)
+  // Exclude all-day events from blocking time slots
+  const timedEvents = events.filter(e => !e.isAllDay);
   const blockedRanges: { start: Date; end: Date }[] = [
-    ...events.map((e) => ({ start: new Date(e.start), end: new Date(e.end) })),
+    ...timedEvents.map((e) => ({ start: new Date(e.start), end: new Date(e.end) })),
     ...protectedTimes.map((pt) => {
-      const [ptStartH, ptStartM] = pt.start.split(':').map(Number);
-      const [ptEndH, ptEndM] = pt.end.split(':').map(Number);
-      
-      const ptStart = new Date(date);
-      ptStart.setHours(ptStartH, ptStartM, 0, 0);
-      
-      const ptEnd = new Date(date);
-      ptEnd.setHours(ptEndH, ptEndM, 0, 0);
-      
-      return { start: ptStart, end: ptEnd };
+      const ptStartStr = `${date.toISOString().split('T')[0]}T${pt.start}:00`;
+      const ptEndStr = `${date.toISOString().split('T')[0]}T${pt.end}:00`;
+
+      return {
+        start: new Date(ptStartStr),
+        end: new Date(ptEndStr)
+      };
     }),
   ].sort((a, b) => a.start.getTime() - b.start.getTime());
 
@@ -326,6 +374,7 @@ export function calculateAvailableSlots(
           start: new Date(cursor),
           end: new Date(slotEnd),
           available: true,
+          timezone: userTimezone,
         });
       }
     }
@@ -340,6 +389,7 @@ export function calculateAvailableSlots(
       start: new Date(cursor),
       end: new Date(workEnd),
       available: true,
+      timezone: userTimezone,
     });
   }
 
@@ -384,15 +434,16 @@ export async function getAvailability(
   preferences: UserPreferences,
   respectProtectedTime: boolean = true
 ): Promise<TimeSlot[]> {
-  const events = await getEvents(userId, startDate, endDate);
+  const userTimezone = preferences.timezone;
+  const events = await getEvents(userId, startDate, endDate, userTimezone);
   const availableSlots: TimeSlot[] = [];
 
   const current = new Date(startDate);
   while (current < endDate) {
-    const dayEvents = events.filter((e) => {
-      const eventDate = new Date(e.start);
-      return eventDate.toDateString() === current.toDateString();
-    });
+    // Filter events for this day using timezone-aware comparison
+    const dayEvents = events.filter((event) =>
+      isSameDayInTimezone(event.start, current, userTimezone)
+    );
 
     const effectivePrefs = respectProtectedTime
       ? preferences
@@ -422,8 +473,10 @@ export async function createEvent(
     description?: string;
     start: Date;
     end: Date;
+    timezone?: string;
     attendees?: string[];
     location?: string;
+    isAllDay?: boolean;
   },
   maxRetries: number = 3
 ): Promise<CalendarEvent> {
@@ -447,6 +500,9 @@ export async function createEvent(
   if (event.start >= event.end) {
     throw new Error('Event start time must be before end time');
   }
+
+  // Get user's timezone
+  const userTimezone = event.timezone || await getUserTimezoneFromDb(userId);
 
   // Validate duration (max 8 hours)
   const durationMs = event.end.getTime() - event.start.getTime();
@@ -485,17 +541,18 @@ export async function createEvent(
     try {
       const calendar = await getCalendarClient(userId);
 
-      // Prepare request body
+      // Prepare request body with timezone information
       const requestBody: any = {
         summary: title,
         description: event.description?.trim() || undefined,
-        start: {
-          dateTime: event.start.toISOString(),
-        },
-        end: {
-          dateTime: event.end.toISOString(),
-        },
       };
+
+      // Format start and end times with timezone
+      const googleStart = formatForGoogleCalendar(event.start, event.isAllDay, userTimezone);
+      const googleEnd = formatForGoogleCalendar(event.end, event.isAllDay, userTimezone);
+
+      requestBody.start = googleStart;
+      requestBody.end = googleEnd;
 
       // Add attendees if any
       if (uniqueAttendees.length > 0) {
@@ -531,7 +588,7 @@ export async function createEvent(
         throw new Error('No event data returned from Google Calendar API');
       }
 
-      return mapGoogleEvent(response.data);
+      return await mapGoogleEvent(response.data, userId);
 
     } catch (error) {
       lastError = error as Error;

@@ -5,19 +5,24 @@ import { useRouter } from 'next/navigation';
 import { MainCanvas } from '@/components/layout';
 import { Card, Button } from '@/components/ui';
 import { CalendarEvent, DaySchedule } from '@/types';
+import { getUserTimezone, isSameDayInTimezone, startOfDayInTimezone, endOfDayInTimezone } from '@/lib/date-utils';
 
-function formatTime(date: Date): string {
+function formatTime(date: Date, timezone: string): string {
   return date.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
+    timeZone: timezone,
   });
 }
 
-function getWeekDays(baseDate: Date): Date[] {
+function getWeekDays(baseDate: Date, weekStartsOn: number = 0): Date[] {
   const days: Date[] = [];
-  const startOfWeek = new Date(baseDate);
-  startOfWeek.setDate(baseDate.getDate() - baseDate.getDay());
+  const zonedBaseDate = new Date(baseDate.toLocaleString('en-US', { timeZone: getUserTimezone() }));
+
+  // Calculate start of week in user's timezone
+  const startOfWeek = new Date(zonedBaseDate);
+  startOfWeek.setDate(zonedBaseDate.getDate() - zonedBaseDate.getDay() + weekStartsOn);
   startOfWeek.setHours(0, 0, 0, 0);
 
   for (let i = 0; i < 7; i++) {
@@ -44,6 +49,12 @@ export default function CalendarPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
+  const [userTimezone, setUserTimezone] = useState<string>('America/Los_Angeles');
+
+  // Initialize user timezone on mount
+  useEffect(() => {
+    setUserTimezone(getUserTimezone());
+  }, []);
 
   const weekDays = getWeekDays(currentDate);
 
@@ -54,16 +65,18 @@ export default function CalendarPage() {
         setIsLoading(true);
         setError(null);
 
-        // Calculate week start/end for the API
-        const startOfWeek = new Date(currentDate);
-        startOfWeek.setDate(currentDate.getDate() - currentDate.getDay());
-        startOfWeek.setHours(0, 0, 0, 0);
+        // Calculate week start/end for the API using timezone-aware dates
+        const startOfWeek = startOfDayInTimezone(
+          new Date(currentDate.toLocaleString('en-US', { timeZone: userTimezone })),
+          userTimezone
+        );
+        startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay()); // Sunday start
 
         const endOfWeek = new Date(startOfWeek);
         endOfWeek.setDate(startOfWeek.getDate() + 7);
 
         const response = await fetch(
-          `/api/calendar/events?start=${startOfWeek.toISOString()}&end=${endOfWeek.toISOString()}`
+          `/api/calendar/events?start=${startOfWeek.toISOString()}&end=${endOfWeek.toISOString()}&timezone=${encodeURIComponent(userTimezone)}`
         );
 
         if (!response.ok) {
@@ -83,19 +96,15 @@ export default function CalendarPage() {
           end: new Date(event.end),
         }));
 
-        // Group events by day
+        // Group events by day using timezone-aware comparison
         const scheduleByDay: DaySchedule[] = weekDays.map((day) => {
-          const dayEvents = parsedEvents.filter((event) => {
-            const eventDate = new Date(event.start);
-            return (
-              eventDate.getFullYear() === day.getFullYear() &&
-              eventDate.getMonth() === day.getMonth() &&
-              eventDate.getDate() === day.getDate()
-            );
-          });
+          const dayEvents = parsedEvents.filter((event) =>
+            isSameDayInTimezone(event.start, day, userTimezone)
+          );
 
           return {
             date: day,
+            timezone: userTimezone,
             events: dayEvents,
             availableSlots: [],
             stats: { meetingMinutes: 0, focusMinutes: 0, availableMinutes: 0 },
@@ -112,7 +121,7 @@ export default function CalendarPage() {
     }
 
     fetchCalendar();
-  }, [currentDate, router]);
+  }, [currentDate, router, userTimezone]);
 
   // Navigation handlers
   const goToPreviousWeek = () => {
@@ -132,20 +141,19 @@ export default function CalendarPage() {
   };
 
   const getEventsForDay = (date: Date): CalendarEvent[] => {
-    const daySchedule = weekSchedule.find((schedule) => {
-      const scheduleDate = new Date(schedule.date);
-      return (
-        scheduleDate.getFullYear() === date.getFullYear() &&
-        scheduleDate.getMonth() === date.getMonth() &&
-        scheduleDate.getDate() === date.getDate()
-      );
-    });
+    const daySchedule = weekSchedule.find((schedule) =>
+      isSameDayInTimezone(schedule.date, date, userTimezone)
+    );
     return daySchedule?.events || [];
   };
 
   const getEventPosition = (event: CalendarEvent): { top: number; height: number } => {
-    const startHour = event.start.getHours() + event.start.getMinutes() / 60;
-    const endHour = event.end.getHours() + event.end.getMinutes() / 60;
+    // Convert event times to user's timezone for positioning
+    const startInTimezone = new Date(event.start.toLocaleString('en-US', { timeZone: userTimezone }));
+    const endInTimezone = new Date(event.end.toLocaleString('en-US', { timeZone: userTimezone }));
+
+    const startHour = startInTimezone.getHours() + startInTimezone.getMinutes() / 60;
+    const endHour = endInTimezone.getHours() + endInTimezone.getMinutes() / 60;
     const top = (startHour - 8) * 60; // 60px per hour, starting at 8 AM
     const height = (endHour - startHour) * 60;
     return { top: Math.max(top, 0), height: Math.max(height, 30) };
@@ -282,14 +290,37 @@ export default function CalendarPage() {
 
                 {/* Events */}
                 {dayEvents.map((event) => {
-                  const { top, height } = getEventPosition(event);
                   const colors = categoryColors[event.category];
+
+                  // Handle all-day events differently
+                  if (event.isAllDay) {
+                    return (
+                      <div
+                        key={event.id}
+                        className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer hover:shadow-md transition-shadow top-0 ${colors.bg} ${colors.border}`}
+                        style={{
+                          height: '24px',
+                          marginBottom: '2px',
+                          zIndex: 10
+                        }}
+                        title={`${event.title} (All day)`}
+                        onClick={() => setSelectedEvent(event)}
+                      >
+                        <p className={`text-xs font-medium truncate ${colors.text}`}>
+                          {event.title}
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  // Regular timed events
+                  const { top, height } = getEventPosition(event);
                   return (
                     <div
                       key={event.id}
                       className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer hover:shadow-md transition-shadow ${colors.bg} ${colors.border}`}
                       style={{ top: `${top}px`, height: `${height}px` }}
-                      title={`${event.title}\n${formatTime(event.start)} - ${formatTime(event.end)}`}
+                      title={`${event.title}\n${formatTime(event.start, userTimezone)} - ${formatTime(event.end, userTimezone)}`}
                       onClick={() => setSelectedEvent(event)}
                     >
                       <p className={`text-xs font-medium truncate ${colors.text}`}>
@@ -297,7 +328,7 @@ export default function CalendarPage() {
                       </p>
                       {height > 40 && (
                         <p className="text-xs text-[var(--text-secondary)] truncate">
-                          {formatTime(event.start)}
+                          {formatTime(event.start, userTimezone)}
                         </p>
                       )}
                     </div>
@@ -348,10 +379,18 @@ export default function CalendarPage() {
                 </svg>
                 <div>
                   <p className="text-sm text-[var(--text-primary)]">
-                    {selectedEvent.start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+                    {selectedEvent.start.toLocaleDateString('en-US', {
+                      weekday: 'long',
+                      month: 'long',
+                      day: 'numeric',
+                      timeZone: userTimezone
+                    })}
                   </p>
                   <p className="text-sm text-[var(--text-secondary)]">
-                    {formatTime(selectedEvent.start)} - {formatTime(selectedEvent.end)}
+                    {selectedEvent.isAllDay
+                      ? 'All day'
+                      : `${formatTime(selectedEvent.start, userTimezone)} - ${formatTime(selectedEvent.end, userTimezone)}`
+                    }
                   </p>
                 </div>
               </div>

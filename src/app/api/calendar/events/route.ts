@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const start = searchParams.get('start');
     const end = searchParams.get('end');
+    const timezone = searchParams.get('timezone');
+    const maxResults = Math.min(parseInt(searchParams.get('maxResults') || '100', 10), 250); // Cap at 250
 
     if (!start || !end) {
       return NextResponse.json(
@@ -35,8 +37,18 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const events = await getEvents(session.user.id, startDate, endDate);
-    return NextResponse.json(events);
+    const events = await getEvents(session.user.id, startDate, endDate, timezone || undefined);
+
+    // Apply pagination on our side since Google Calendar API doesn't support offset-based pagination
+    const paginatedEvents = events.slice(0, maxResults);
+    const hasMore = events.length > maxResults;
+
+    return NextResponse.json({
+      events: paginatedEvents,
+      hasMore,
+      total: events.length,
+      timezone: timezone || 'America/Los_Angeles'
+    });
 
   } catch (error) {
     console.error('Calendar events API error:', error);
@@ -84,7 +96,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { title, description, start, end, attendees, location } = body;
+    const { title, description, start, end, attendees, location, timezone } = body;
 
     // Validate required fields
     if (!title || typeof title !== 'string' || !title.trim()) {
@@ -122,6 +134,7 @@ export async function POST(request: NextRequest) {
       description: description?.trim(),
       start: startDate,
       end: endDate,
+      timezone: timezone,
       attendees: validAttendees,
       location: location?.trim(),
     });
