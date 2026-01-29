@@ -351,7 +351,7 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
     }
 
     // Validate attendees are email-like
-    eventData.attendees = eventData.attendees.filter(email =>
+    eventData.attendees = eventData.attendees.filter((email: string) =>
       typeof email === 'string' &&
       email.includes('@') &&
       email.length > 5 &&

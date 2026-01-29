@@ -1,0 +1,15 @@
+
+> tenex-take-home@0.1.0 build
+> prisma generate && next build
+
+Loaded Prisma config from prisma.config.ts.
+
+Prisma schema loaded from prisma/schema.prisma.
+
+✔ Generated Prisma Client (v7.3.0) to ./node_modules/@prisma/client in 506ms
+
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+
+
+⨯ Unable to acquire lock at /Users/rashadgaines/tenex-take-home/.next/lock, is another instance of next build running?
+  Suggestion: If you intended to restart next build, terminate the other process, and then try again.
