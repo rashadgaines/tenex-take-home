@@ -1,7 +1,6 @@
 import { parseISO, startOfDay, endOfDay, isSameDay } from 'date-fns';
 import { formatInTimeZone, fromZonedTime, toZonedTime } from 'date-fns-tz';
 import { DEFAULT_TIMEZONE } from './constants';
-import { getUserTimezone } from './user-preferences';
 
 // Re-export for backwards compatibility
 export { DEFAULT_TIMEZONE };
@@ -9,14 +8,10 @@ export { DEFAULT_TIMEZONE };
 /**
  * Date and timezone utility functions for the scheduling system
  * All functions are timezone-aware and handle conversions properly
+ *
+ * NOTE: This file is safe for client-side use. Server-only database
+ * functions are in user-preferences.ts
  */
-
-/**
- * Get user's timezone preference (server-side function that requires userId)
- */
-export async function getUserTimezoneFromDb(userId: string): Promise<string> {
-  return await getUserTimezone(userId);
-}
 
 /**
  * Get user's timezone preference from localStorage (client-side only)

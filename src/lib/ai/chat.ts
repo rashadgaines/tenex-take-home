@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
-import { createDateFromStrings, getUserTimezoneFromDb, isInPast } from '../date-utils';
+import { createDateFromStrings, isInPast } from '../date-utils';
+import { getUserTimezone } from '../user-preferences';
 import {
   ChatMessage,
   ChatRequest,
@@ -396,7 +397,7 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       : 30; // Default to 30 minutes
 
     // Get user's timezone for proper date handling
-    const userTimezone = userId ? await getUserTimezoneFromDb(userId) : 'America/Los_Angeles';
+    const userTimezone = userId ? await getUserTimezone(userId) : 'America/Los_Angeles';
 
     // Create event data with timezone-aware validation
     const eventStart = createDateFromStrings(

@@ -5,13 +5,13 @@ import type { UserPreferences } from '@/types/user';
 import {
   parseGoogleDate,
   formatForGoogleCalendar,
-  getUserTimezoneFromDb,
   startOfDayInTimezone,
   endOfDayInTimezone,
   isSameDayInTimezone,
   toUtcISOString,
   DEFAULT_TIMEZONE
 } from '../date-utils';
+import { getUserTimezone } from '../user-preferences';
 
 // Create OAuth2 client with token refresh handling
 async function getCalendarClient(userId: string) {
@@ -66,7 +66,7 @@ async function mapGoogleEvent(event: calendar_v3.Schema$Event, userId: string): 
   }
 
   // Get user's timezone for proper date parsing
-  const userTimezone = await getUserTimezoneFromDb(userId);
+  const userTimezone = await getUserTimezone(userId);
 
   // Validate and map attendees with proper email validation
   const attendees: Attendee[] = (event.attendees || [])
@@ -177,7 +177,7 @@ export async function getEvents(
   }
 
   // Get user's timezone if not provided
-  const userTimezone = timezone || await getUserTimezoneFromDb(userId);
+  const userTimezone = timezone || await getUserTimezone(userId);
 
   // Limit date range to prevent excessive API calls
   const maxRangeDays = 90; // 3 months
@@ -502,7 +502,7 @@ export async function createEvent(
   }
 
   // Get user's timezone
-  const userTimezone = event.timezone || await getUserTimezoneFromDb(userId);
+  const userTimezone = event.timezone || await getUserTimezone(userId);
 
   // Validate duration (max 8 hours)
   const durationMs = event.end.getTime() - event.start.getTime();
