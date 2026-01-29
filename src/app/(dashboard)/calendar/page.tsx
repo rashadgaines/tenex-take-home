@@ -6,7 +6,7 @@ import { MainCanvas } from '@/components/layout';
 import { Card, Button, VisuallyHidden } from '@/components/ui';
 import { EventPopover } from '@/components/calendar';
 import { CalendarEvent, DaySchedule } from '@/types';
-import { getClientTimezone, startOfDayInTimezone } from '@/lib/date-utils';
+import { getClientTimezone, setUserTimezone as setStoredTimezone, startOfDayInTimezone } from '@/lib/date-utils';
 import { detectConflicts, getConflictMessage } from '@/lib/calendar/conflicts';
 import { useCalendarUndo } from '@/hooks/useUndo';
 import { useToast } from '@/hooks/useToast';
@@ -235,9 +235,29 @@ export default function CalendarPage() {
   const [focusedEventIndex, setFocusedEventIndex] = useState<number>(-1);
   const eventRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
-  // Initialize user timezone on mount
+  // Initialize user timezone from server preferences so calendar matches Settings (EST vs PST)
   useEffect(() => {
-    setUserTimezone(getClientTimezone());
+    let cancelled = false;
+    async function initTimezone() {
+      try {
+        const res = await fetch('/api/user/preferences');
+        if (!res.ok || cancelled) return;
+        const json = await res.json();
+        const prefs = json.data ?? json;
+        const tz = prefs?.timezone;
+        if (tz) {
+          setUserTimezone(tz);
+          setStoredTimezone(tz); // sync to localStorage for getClientTimezone()
+        } else {
+          const fallback = getClientTimezone();
+          setUserTimezone(fallback);
+        }
+      } catch {
+        setUserTimezone(getClientTimezone());
+      }
+    }
+    initTimezone();
+    return () => { cancelled = true; };
   }, []);
 
   const weekDays = getWeekDays(currentDate);

@@ -15,6 +15,7 @@ import {
   SettingsIcons
 } from '@/components/settings';
 import { useToast } from '@/hooks/useToast';
+import { setUserTimezone } from '@/lib/date-utils';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface UserPreferences {
@@ -124,6 +125,7 @@ export default function SettingsPage() {
         const data = responseData.data ?? responseData;
         setPreferences(data);
         setOriginalPreferences(data);
+        if (data?.timezone) setUserTimezone(data.timezone); // sync to localStorage so calendar uses server preference
       } catch (err) {
         toast.error('Unable to load preferences. Please try again.');
       } finally {
@@ -171,6 +173,7 @@ export default function SettingsPage() {
     if (!preferences) return;
     const newTimezone = e.target.value;
     setPreferences({ ...preferences, timezone: newTimezone });
+    setUserTimezone(newTimezone); // sync to localStorage so calendar and other client code use same zone
     handleSave({ timezone: newTimezone });
   };
 

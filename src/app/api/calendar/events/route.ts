@@ -11,6 +11,8 @@ import {
 } from '@/lib/api/responses';
 import { validateRequired, validateDateRange } from '@/lib/api/validation';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
+import { getUserPreferences } from '@/lib/user-preferences';
+import { parseDateInTimezone } from '@/lib/date-utils';
 
 export async function GET(request: NextRequest) {
   try {
@@ -117,8 +119,13 @@ export async function POST(request: NextRequest) {
       return validationErrorResponse(dateRangeValidation.error!);
     }
 
-    const startDate = new Date(start);
-    const endDate = new Date(end);
+    // Resolve user timezone: request body or saved preferences (never server default for event times)
+    const preferences = await getUserPreferences(session.user.id);
+    const userTimezone = timezone ?? preferences.timezone;
+
+    // Parse start/end in the user's timezone so "2025-01-29T14:00:00" means 2pm in their zone, not server local
+    const startDate = parseDateInTimezone(String(start), userTimezone);
+    const endDate = parseDateInTimezone(String(end), userTimezone);
 
     // Validate attendees array if provided
     const validAttendees = Array.isArray(attendees)
@@ -130,7 +137,7 @@ export async function POST(request: NextRequest) {
       description: description?.trim(),
       start: startDate,
       end: endDate,
-      timezone: timezone,
+      timezone: userTimezone,
       attendees: validAttendees,
       location: location?.trim(),
     });
