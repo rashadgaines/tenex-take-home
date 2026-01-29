@@ -53,11 +53,11 @@ function getWeekDays(baseDate: Date, weekStartsOn: number = 0): Date[] {
   return days;
 }
 
-const categoryColors: Record<CalendarEvent['category'], { bg: string; border: string; text: string }> = {
-  meeting: { bg: 'bg-[var(--meeting-internal)]', border: 'border-l-[var(--meeting-internal-border)]', text: 'text-[var(--text-primary)]' },
-  external: { bg: 'bg-[var(--meeting-external)]', border: 'border-l-[var(--meeting-external-border)]', text: 'text-[var(--text-primary)]' },
-  focus: { bg: 'bg-[var(--meeting-focus)]', border: 'border-l-[var(--meeting-focus-border)]', text: 'text-[var(--text-primary)]' },
-  personal: { bg: 'bg-[var(--meeting-personal)]', border: 'border-l-[var(--meeting-personal-border)]', text: 'text-[var(--text-primary)]' },
+const categoryColors: Record<CalendarEvent['category'], { bg: string; border: string; text: string; textSecondary: string }> = {
+  meeting: { bg: 'bg-blue-600/80', border: 'border-l-blue-400', text: 'text-white', textSecondary: 'text-blue-100' },
+  external: { bg: 'bg-amber-600/80', border: 'border-l-amber-400', text: 'text-white', textSecondary: 'text-amber-100' },
+  focus: { bg: 'bg-emerald-600/80', border: 'border-l-emerald-400', text: 'text-white', textSecondary: 'text-emerald-100' },
+  personal: { bg: 'bg-violet-600/80', border: 'border-l-violet-400', text: 'text-white', textSecondary: 'text-violet-100' },
 };
 
 const hours = Array.from({ length: 12 }, (_, i) => i + 8); // 8 AM to 7 PM
@@ -326,6 +326,77 @@ export default function CalendarPage() {
     return { top: Math.max(top, 0), height: Math.max(height, 30) };
   };
 
+  // Calculate overlapping events and their positions
+  const getEventsWithOverlapInfo = (events: CalendarEvent[]): Array<CalendarEvent & { column: number; totalColumns: number }> => {
+    if (events.length === 0) return [];
+
+    // Sort events by start time
+    const sortedEvents = [...events].sort((a, b) =>
+      new Date(a.start).getTime() - new Date(b.start).getTime()
+    );
+
+    const result: Array<CalendarEvent & { column: number; totalColumns: number }> = [];
+    const columns: CalendarEvent[][] = [];
+
+    for (const event of sortedEvents) {
+      if (event.isAllDay) {
+        result.push({ ...event, column: 0, totalColumns: 1 });
+        continue;
+      }
+
+      const eventStart = new Date(event.start).getTime();
+      const eventEnd = new Date(event.end).getTime();
+
+      // Find a column where this event fits (no overlap)
+      let placed = false;
+      for (let colIndex = 0; colIndex < columns.length; colIndex++) {
+        const column = columns[colIndex];
+        const lastEventInColumn = column[column.length - 1];
+        const lastEventEnd = new Date(lastEventInColumn.end).getTime();
+
+        if (eventStart >= lastEventEnd) {
+          // No overlap, place in this column
+          column.push(event);
+          result.push({ ...event, column: colIndex, totalColumns: 0 }); // totalColumns updated later
+          placed = true;
+          break;
+        }
+      }
+
+      if (!placed) {
+        // Create new column
+        columns.push([event]);
+        result.push({ ...event, column: columns.length - 1, totalColumns: 0 });
+      }
+    }
+
+    // Update totalColumns for each event based on overlapping events
+    for (let i = 0; i < result.length; i++) {
+      if (result[i].isAllDay) continue;
+
+      const eventStart = new Date(result[i].start).getTime();
+      const eventEnd = new Date(result[i].end).getTime();
+
+      // Find all events that overlap with this one
+      let maxColumn = result[i].column;
+      for (const other of result) {
+        if (other.isAllDay || other.id === result[i].id) continue;
+
+        const otherStart = new Date(other.start).getTime();
+        const otherEnd = new Date(other.end).getTime();
+
+        // Check if they overlap
+        if (eventStart < otherEnd && eventEnd > otherStart) {
+          maxColumn = Math.max(maxColumn, other.column);
+        }
+      }
+
+      result[i].totalColumns = maxColumn + 1;
+    }
+
+    return result;
+  };
+
   const isToday = (date: Date): boolean => {
     const today = new Date();
     return (
@@ -407,20 +478,22 @@ export default function CalendarPage() {
     >
       <Card padding="none" className="overflow-hidden">
         {/* Header */}
-        <div className="grid grid-cols-8 border-b border-[var(--border-light)]">
+        <div className="grid grid-cols-8 border-b border-[var(--border-medium)]">
           <div className="p-3 text-xs text-[var(--text-tertiary)]" />
           {weekDays.map((day) => (
             <div
               key={day.toISOString()}
-              className={`p-3 text-center border-l border-[var(--border-light)] ${
-                isToday(day) ? 'bg-[var(--accent-light)]' : ''
+              className={`p-3 text-center border-l border-[var(--border-medium)] ${
+                isToday(day) ? 'bg-blue-900/30' : ''
               }`}
             >
-              <p className="text-xs text-[var(--text-secondary)] uppercase">
+              <p className={`text-xs uppercase font-medium ${
+                isToday(day) ? 'text-blue-400' : 'text-[var(--text-secondary)]'
+              }`}>
                 {day.toLocaleDateString('en-US', { weekday: 'short' })}
               </p>
-              <p className={`text-lg font-semibold ${
-                isToday(day) ? 'text-[var(--accent-primary)]' : 'text-[var(--text-primary)]'
+              <p className={`text-xl font-bold ${
+                isToday(day) ? 'text-blue-400' : 'text-[var(--text-primary)]'
               }`}>
                 {day.getDate()}
               </p>
@@ -446,11 +519,12 @@ export default function CalendarPage() {
           {/* Day columns */}
           {weekDays.map((day) => {
             const dayEvents = getEventsForDay(day);
+            const eventsWithOverlap = getEventsWithOverlapInfo(dayEvents);
             return (
               <div
                 key={day.toISOString()}
-                className={`relative border-l border-[var(--border-light)] ${
-                  isToday(day) ? 'bg-[var(--accent-light)]' : ''
+                className={`relative border-l border-[var(--border-medium)] ${
+                  isToday(day) ? 'bg-blue-900/20' : ''
                 }`}
               >
                 {/* Hour lines */}
@@ -463,7 +537,7 @@ export default function CalendarPage() {
                 ))}
 
                 {/* Events */}
-                {dayEvents.map((event) => {
+                {eventsWithOverlap.map((event) => {
                   const colors = categoryColors[event.category];
 
                   // Handle all-day events differently
@@ -471,37 +545,47 @@ export default function CalendarPage() {
                     return (
                       <div
                         key={event.id}
-                        className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer hover:shadow-md transition-shadow top-0 ${colors.bg} ${colors.border}`}
+                        className={`absolute left-1 right-1 rounded p-1.5 border-l-4 cursor-pointer hover:brightness-110 transition-all top-0 shadow-sm ${colors.bg} ${colors.border}`}
                         style={{
-                          height: '24px',
+                          height: '26px',
                           marginBottom: '2px',
                           zIndex: 10
                         }}
                         title={`${event.title} (All day)`}
                         onClick={() => setSelectedEvent(event)}
                       >
-                        <p className={`text-xs font-medium truncate ${colors.text}`}>
+                        <p className={`text-xs font-semibold truncate ${colors.text}`}>
                           {event.title}
                         </p>
                       </div>
                     );
                   }
 
-                  // Regular timed events
+                  // Regular timed events with overlap handling
                   const { top, height } = getEventPosition(event);
+                  const width = event.totalColumns > 1 ? `calc(${100 / event.totalColumns}% - 4px)` : 'calc(100% - 8px)';
+                  const left = event.totalColumns > 1 ? `calc(${(event.column / event.totalColumns) * 100}% + 2px)` : '4px';
+
                   return (
                     <div
                       key={event.id}
-                      className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer hover:shadow-md transition-shadow ${colors.bg} ${colors.border}`}
-                      style={{ top: `${top}px`, height: `${height}px` }}
+                      className={`absolute rounded p-1.5 border-l-4 cursor-pointer hover:brightness-110 transition-all shadow-sm overflow-hidden ${colors.bg} ${colors.border}`}
+                      style={{
+                        top: `${top}px`,
+                        height: `${height}px`,
+                        minHeight: '24px',
+                        width,
+                        left,
+                        zIndex: event.column + 1
+                      }}
                       title={`${event.title}\n${formatTime(event.start, userTimezone)} - ${formatTime(event.end, userTimezone)}`}
                       onClick={() => setSelectedEvent(event)}
                     >
-                      <p className={`text-xs font-medium truncate ${colors.text}`}>
+                      <p className={`text-xs font-semibold truncate leading-tight ${colors.text}`}>
                         {event.title}
                       </p>
-                      {height > 40 && (
-                        <p className="text-xs text-[var(--text-secondary)] truncate">
+                      {height > 36 && (
+                        <p className={`text-[10px] truncate mt-0.5 ${colors.textSecondary}`}>
                           {formatTime(event.start, userTimezone)}
                         </p>
                       )}
@@ -515,11 +599,11 @@ export default function CalendarPage() {
       </Card>
 
       {/* Legend */}
-      <div className="mt-4 flex gap-4 justify-center">
+      <div className="mt-4 flex gap-6 justify-center">
         {Object.entries(categoryColors).map(([category, colors]) => (
           <div key={category} className="flex items-center gap-2">
-            <div className={`w-3 h-3 rounded ${colors.bg} border-l-2 ${colors.border}`} />
-            <span className="text-xs text-[var(--text-secondary)] capitalize">{category}</span>
+            <div className={`w-4 h-4 rounded border-l-4 ${colors.bg} ${colors.border}`} />
+            <span className="text-sm text-[var(--text-secondary)] capitalize">{category}</span>
           </div>
         ))}
       </div>

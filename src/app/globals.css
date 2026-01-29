@@ -15,13 +15,13 @@
   /* Accent - Calm neutral */
   --accent-primary: #e5e5e5;
   --accent-hover: #d4d4d4;
-  --accent-light: rgba(255, 255, 255, 0.08);
+  --accent-light: rgba(59, 130, 246, 0.12);
 
-  /* Meeting categories - Dark adjusted */
-  --meeting-internal: rgba(59, 130, 246, 0.2);
-  --meeting-external: rgba(245, 158, 11, 0.2);
-  --meeting-focus: rgba(16, 185, 129, 0.2);
-  --meeting-personal: rgba(139, 92, 246, 0.2);
+  /* Meeting categories - Dark adjusted with better visibility */
+  --meeting-internal: rgba(59, 130, 246, 0.35);
+  --meeting-external: rgba(245, 158, 11, 0.35);
+  --meeting-focus: rgba(16, 185, 129, 0.35);
+  --meeting-personal: rgba(139, 92, 246, 0.35);
 
   /* Meeting category borders */
   --meeting-internal-border: #3B82F6;
@@ -34,9 +34,9 @@
   --status-warning: #f59e0b;
   --status-error: #ef4444;
 
-  /* Borders - Dark */
-  --border-light: #262626;
-  --border-medium: #333333;
+  /* Borders - Dark (improved visibility) */
+  --border-light: #333333;
+  --border-medium: #444444;
 
   /* Shadows - Dark */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
