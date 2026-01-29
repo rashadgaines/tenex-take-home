@@ -1,7 +1,5 @@
 'use client';
 
-import { motion } from 'framer-motion';
-
 interface NavItem {
   id: string;
   label: string;
@@ -26,7 +24,7 @@ export function SettingsNav({ items, activeSection, onSelect }: SettingsNavProps
             onClick={() => onSelect(item.id)}
             className={`
               w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left
-              transition-colors duration-150 relative
+              transition-all duration-150 relative
               ${isActive
                 ? 'text-[var(--text-primary)] bg-[var(--bg-tertiary)]'
                 : `text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]`
@@ -34,13 +32,9 @@ export function SettingsNav({ items, activeSection, onSelect }: SettingsNavProps
               ${item.danger ? 'text-red-400 hover:text-red-300' : ''}
             `}
           >
-            {isActive && (
-              <motion.div
-                layoutId="activeSettingsNav"
-                className={`absolute left-0 top-0 bottom-0 w-0.5 rounded-full ${item.danger ? 'bg-red-400' : 'bg-[var(--accent-primary)]'}`}
-                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              />
-            )}
+            <div
+              className={`absolute left-0 top-0 bottom-0 w-0.5 rounded-full transition-opacity duration-150 ${item.danger ? 'bg-red-400' : 'bg-[var(--accent-primary)]'} ${isActive ? 'opacity-100' : 'opacity-0'}`}
+            />
             <span className={`flex-shrink-0 ${item.danger && isActive ? 'text-red-400' : ''}`}>
               {item.icon}
             </span>

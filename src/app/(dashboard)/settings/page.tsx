@@ -68,11 +68,12 @@ const NAV_ITEMS = [
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
   const { toast } = useToast();
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
   const [originalPreferences, setOriginalPreferences] = useState<UserPreferences | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [activeSection, setActiveSection] = useState('general');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -101,8 +102,11 @@ export default function SettingsPage() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
-  // Fetch preferences on mount
+  // Fetch preferences once session is ready
   useEffect(() => {
+    // Wait for session to be determined before fetching
+    if (sessionStatus === 'loading') return;
+
     async function fetchPreferences() {
       try {
         setIsLoading(true);
@@ -124,11 +128,12 @@ export default function SettingsPage() {
         toast.error('Unable to load preferences. Please try again.');
       } finally {
         setIsLoading(false);
+        setIsInitialized(true);
       }
     }
 
     fetchPreferences();
-  }, [router, toast]);
+  }, [router, toast, sessionStatus]);
 
   const handleSave = useCallback(async (updates: Partial<UserPreferences>, showToast = true) => {
     if (!preferences) return;
@@ -230,8 +235,8 @@ export default function SettingsPage() {
     }
   };
 
-  // Loading state
-  if (isLoading) {
+  // Loading state - wait for both session and preferences
+  if (sessionStatus === 'loading' || (isLoading && !isInitialized)) {
     return (
       <MainCanvas>
         <div className="max-w-5xl mx-auto">
