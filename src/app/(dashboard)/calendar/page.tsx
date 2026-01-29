@@ -62,6 +62,24 @@ const categoryColors: Record<CalendarEvent['category'], { bg: string; border: st
 
 const hours = Array.from({ length: 12 }, (_, i) => i + 8); // 8 AM to 7 PM
 
+interface NewEventForm {
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  description: string;
+  location: string;
+}
+
+const initialFormState: NewEventForm = {
+  title: '',
+  date: '',
+  startTime: '09:00',
+  endTime: '10:00',
+  description: '',
+  location: '',
+};
+
 export default function CalendarPage() {
   const router = useRouter();
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -70,6 +88,12 @@ export default function CalendarPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [userTimezone, setUserTimezone] = useState<string>('America/Los_Angeles');
+
+  // Create event modal state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newEventForm, setNewEventForm] = useState<NewEventForm>(initialFormState);
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Initialize user timezone on mount
   useEffect(() => {
@@ -163,6 +187,125 @@ export default function CalendarPage() {
     setCurrentDate(new Date());
   };
 
+  // Open create modal with optional pre-filled date
+  const openCreateModal = (date?: Date) => {
+    const targetDate = date || new Date();
+    setNewEventForm({
+      ...initialFormState,
+      date: getDayDateString(targetDate),
+    });
+    setCreateError(null);
+    setShowCreateModal(true);
+  };
+
+  // Handle form field changes
+  const handleFormChange = (field: keyof NewEventForm, value: string) => {
+    setNewEventForm(prev => ({ ...prev, [field]: value }));
+    setCreateError(null);
+  };
+
+  // Create event handler
+  const handleCreateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreateError(null);
+
+    // Validation
+    if (!newEventForm.title.trim()) {
+      setCreateError('Title is required');
+      return;
+    }
+    if (!newEventForm.date) {
+      setCreateError('Date is required');
+      return;
+    }
+    if (!newEventForm.startTime || !newEventForm.endTime) {
+      setCreateError('Start and end times are required');
+      return;
+    }
+    if (newEventForm.startTime >= newEventForm.endTime) {
+      setCreateError('End time must be after start time');
+      return;
+    }
+
+    setIsCreating(true);
+
+    try {
+      // Construct ISO datetime strings
+      const startDateTime = `${newEventForm.date}T${newEventForm.startTime}:00`;
+      const endDateTime = `${newEventForm.date}T${newEventForm.endTime}:00`;
+
+      const response = await fetch('/api/calendar/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newEventForm.title.trim(),
+          description: newEventForm.description.trim() || undefined,
+          start: startDateTime,
+          end: endDateTime,
+          timezone: userTimezone,
+          location: newEventForm.location.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          router.push('/login');
+          return;
+        }
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to create event');
+      }
+
+      // Success - close modal and refresh calendar
+      setShowCreateModal(false);
+      setNewEventForm(initialFormState);
+
+      // Refresh the calendar to show the new event
+      setIsLoading(true);
+      const startOfWeek = startOfDayInTimezone(
+        new Date(currentDate.toLocaleString('en-US', { timeZone: userTimezone })),
+        userTimezone
+      );
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 7);
+
+      const refreshResponse = await fetch(
+        `/api/calendar/events?start=${startOfWeek.toISOString()}&end=${endOfWeek.toISOString()}&timezone=${encodeURIComponent(userTimezone)}`
+      );
+      if (refreshResponse.ok) {
+        const data = await refreshResponse.json();
+        const events = data.events || [];
+        const parsedEvents: CalendarEvent[] = events.map((event: CalendarEvent) => ({
+          ...event,
+          start: new Date(event.start),
+          end: new Date(event.end),
+        }));
+        const scheduleByDay: DaySchedule[] = weekDays.map((day) => {
+          const dayDateStr = getDayDateString(day);
+          const dayEvents = parsedEvents.filter((event) => {
+            const eventDateStr = getEventDateString(event, userTimezone);
+            return eventDateStr === dayDateStr;
+          });
+          return {
+            date: day,
+            timezone: userTimezone,
+            events: dayEvents,
+            availableSlots: [],
+            stats: { meetingMinutes: 0, focusMinutes: 0, availableMinutes: 0 },
+          };
+        });
+        setWeekSchedule(scheduleByDay);
+      }
+      setIsLoading(false);
+    } catch (err) {
+      console.error('Failed to create event:', err);
+      setCreateError(err instanceof Error ? err.message : 'Failed to create event');
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   const getEventsForDay = (date: Date): CalendarEvent[] => {
     const targetDateStr = getDayDateString(date);
     const daySchedule = weekSchedule.find((schedule) =>
@@ -237,6 +380,13 @@ export default function CalendarPage() {
       subtitle={currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
       headerAction={
         <div className="flex gap-2">
+          <Button variant="primary" size="sm" onClick={() => openCreateModal()}>
+            <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            New Event
+          </Button>
+          <div className="w-px bg-[var(--border-light)]" />
           <Button variant="secondary" size="sm" onClick={goToPreviousWeek}>
             <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
@@ -495,6 +645,135 @@ export default function CalendarPage() {
                 </div>
               )}
             </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Create Event Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowCreateModal(false)}>
+          <Card className="max-w-md w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">New Event</h3>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateEvent} className="space-y-4">
+              {/* Title */}
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                  Title <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newEventForm.title}
+                  onChange={(e) => handleFormChange('title', e.target.value)}
+                  placeholder="Meeting with..."
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                  autoFocus
+                />
+              </div>
+
+              {/* Date */}
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                  Date <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={newEventForm.date}
+                  onChange={(e) => handleFormChange('date', e.target.value)}
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                />
+              </div>
+
+              {/* Time */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                    Start Time <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="time"
+                    value={newEventForm.startTime}
+                    onChange={(e) => handleFormChange('startTime', e.target.value)}
+                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                    End Time <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="time"
+                    value={newEventForm.endTime}
+                    onChange={(e) => handleFormChange('endTime', e.target.value)}
+                    className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                  />
+                </div>
+              </div>
+
+              {/* Location */}
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                  Location
+                </label>
+                <input
+                  type="text"
+                  value={newEventForm.location}
+                  onChange={(e) => handleFormChange('location', e.target.value)}
+                  placeholder="Conference Room A or Zoom link"
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent-primary)]"
+                />
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                  Description
+                </label>
+                <textarea
+                  value={newEventForm.description}
+                  onChange={(e) => handleFormChange('description', e.target.value)}
+                  placeholder="Add details about this event..."
+                  rows={3}
+                  className="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border-light)] rounded-lg text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent-primary)] resize-none"
+                />
+              </div>
+
+              {/* Error message */}
+              {createError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-sm text-red-600">{createError}</p>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setShowCreateModal(false)}
+                  disabled={isCreating}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  disabled={isCreating}
+                >
+                  {isCreating ? 'Creating...' : 'Create Event'}
+                </Button>
+              </div>
+            </form>
           </Card>
         </div>
       )}
