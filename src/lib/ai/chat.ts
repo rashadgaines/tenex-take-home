@@ -296,16 +296,34 @@ async function detectAndExecuteWorkflow(
   preferences: UserPreferences,
   userId: string
 ): Promise<WorkflowChatResponse | null> {
-  // Quick check for potential multi-step requests
-  const multiStepIndicators = [
-    /\b(and|then|also|after that)\b.*\b(schedule|email|block|send|draft|protect)\b/i,
-    /\b(schedule|email|send).+(and|then).+(email|schedule|send)\b/i,
-    /\bfor each\b.*(email|send|draft)/i,
-    /\b(them|each|everyone|all)\b.*(email|send|draft)/i,
-  ];
+  const lowerMessage = message.toLowerCase();
 
-  const mightBeMultiStep = multiStepIndicators.some(pattern => pattern.test(message));
-  if (!mightBeMultiStep) {
+  // Skip workflow detection for simple scheduling requests
+  // These should be handled by the normal scheduling flow
+  const simpleSchedulingPatterns = [
+    /^(schedule|set up|create|book|plan)\s+(a\s+)?(meeting|call|event)/i,
+    /^(can you\s+)?(schedule|set up|book)\s+/i,
+  ];
+  const isSimpleScheduling = simpleSchedulingPatterns.some(p => p.test(message.trim()));
+
+  // Only consider it multi-step if it has BOTH a scheduling action AND a separate email/preference action
+  const hasScheduleAction = /\b(schedule|book|set up|create)\s+(a\s+)?(meeting|call|event)/i.test(lowerMessage);
+  const hasEmailAction = /\b(email|send|draft|write).+(to|for|them|her|him)\b/i.test(lowerMessage) ||
+                         /\b(and|then)\s+(email|send|draft)/i.test(lowerMessage);
+  const hasPreferenceAction = /\b(block|protect)\s+(my|the)?\s*(morning|afternoon|lunch|time)/i.test(lowerMessage);
+
+  // Must have at least two different action types
+  const actionCount = [hasScheduleAction, hasEmailAction, hasPreferenceAction].filter(Boolean).length;
+
+  if (isSimpleScheduling || actionCount < 2) {
+    return null;
+  }
+
+  // Additional check: must have explicit connectors between actions
+  const hasExplicitConnector = /\b(and\s+then|then\s+also|and\s+also|after\s+that|,\s*then)\b/i.test(lowerMessage) ||
+                               /\b(schedule|book).+\b(and|then)\b.+(email|send|draft)/i.test(lowerMessage);
+
+  if (!hasExplicitConnector) {
     return null;
   }
 
@@ -415,7 +433,7 @@ async function executeWorkflow(
     try {
       switch (step.type) {
         case 'schedule': {
-          // Use the scheduling handler
+          // Try the scheduling handler first, fall back to direct creation
           const scheduleResult = await detectAndHandleSchedulingRequest(
             originalMessage,
             schedule,
@@ -426,7 +444,76 @@ async function executeWorkflow(
             workflow.steps[i].result = scheduleResult.message.content;
             results.push(`Scheduling: ${scheduleResult.message.content}`);
           } else {
-            throw new Error('Failed to process scheduling request');
+            // Fallback: create event directly from step params
+            const meetingParams = step.params as {
+              title?: string;
+              attendees?: string[];
+              date?: string;
+              time?: string;
+              duration?: number;
+            };
+
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            // Parse date
+            let eventDate = tomorrow;
+            if (meetingParams.date) {
+              const parsedDate = new Date(meetingParams.date + 'T00:00:00');
+              if (!isNaN(parsedDate.getTime())) {
+                eventDate = parsedDate;
+              }
+            } else if (originalMessage.toLowerCase().includes('tomorrow')) {
+              eventDate = tomorrow;
+            } else if (originalMessage.toLowerCase().includes('today')) {
+              eventDate = today;
+            }
+
+            // Parse time
+            const eventTime = meetingParams.time || preferences.workingHours?.start || '10:00';
+            const duration = meetingParams.duration || 30;
+
+            // Create title from description or params
+            const title = meetingParams.title || step.description || 'Meeting';
+
+            const eventStart = createDateFromStrings(
+              eventDate.toISOString().split('T')[0],
+              eventTime,
+              userTimezone
+            );
+            const eventEnd = new Date(eventStart.getTime() + duration * 60 * 1000);
+
+            // Ensure not in past
+            if (isInPast(eventStart, userTimezone)) {
+              eventStart.setDate(eventStart.getDate() + 1);
+              eventEnd.setDate(eventEnd.getDate() + 1);
+            }
+
+            // Validate attendees
+            const validAttendees = Array.isArray(meetingParams.attendees)
+              ? meetingParams.attendees.filter((email): email is string => {
+                  if (typeof email !== 'string') return false;
+                  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                  return emailRegex.test(email);
+                })
+              : [];
+
+            const eventData = {
+              title: title.substring(0, 100).trim(),
+              description: '',
+              start: eventStart,
+              end: eventEnd,
+              timezone: userTimezone,
+              attendees: validAttendees,
+              location: '',
+            };
+
+            const createdEvent = await createEvent(userId, eventData);
+            const resultMsg = `Scheduled "${createdEvent.title}" for ${eventStart.toLocaleDateString('en-US', { timeZone: userTimezone })} at ${eventStart.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: userTimezone })}`;
+            workflow.steps[i].result = resultMsg;
+            results.push(`Scheduling: ${resultMsg}`);
           }
           break;
         }
