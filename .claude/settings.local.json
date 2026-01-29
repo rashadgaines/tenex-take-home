@@ -7,7 +7,27 @@
       "Bash(npx tsc:*)",
       "Bash(npx prisma generate:*)",
       "Bash(npm run build)",
-      "WebFetch(domain:v0.app)"
+      "WebFetch(domain:v0.app)",
+      "Bash(npx eslint:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(vercel:*)",
+      "Bash(for file in /private/tmp/claude-501/-Users-rashadgaines-tenex-take-home/tasks/*.output)",
+      "Bash(do)",
+      "Bash(if grep -q '\"\"type\"\":\"\"result\"\"' \"$file\")",
+      "Bash(then)",
+      "Bash(basename:*)",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(for id in a078e45 a5c2883 a12c2af a541560 adbf016 a9a4bbe af30915 a6df6be a2d4fe2 aa1e3ae a606a1c)",
+      "Bash(file=\"/private/tmp/claude-501/-Users-rashadgaines-tenex-take-home/tasks/$id.output\")",
+      "Bash(echo:*)",
+      "Bash(else)",
+      "Bash(npm test:*)",
+      "Bash(wc:*)",
+      "Bash(npx vitest:*)",
+      "Bash(node -e:*)"
     ]
   }
 }

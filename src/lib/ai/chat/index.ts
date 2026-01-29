@@ -23,6 +23,7 @@ import { getOpenAIClient, generateId, detectSuggestedActions } from './utils';
 import { detectAndExecuteWorkflow } from './workflows';
 import { detectAndHandleProtectedTimeRequest } from './protected-time';
 import { detectAndHandleSchedulingRequest } from './scheduling';
+import { handleConfirmation } from './confirmations';
 import { DEFAULT_TIMEZONE } from '@/lib/constants';
 
 // Re-export public functions from submodules
@@ -41,7 +42,15 @@ export async function processChat(
 ): Promise<ChatResponse> {
   const { message, context } = request;
 
-  // Check for multi-step workflow first
+  // Check for confirmation responses first (e.g., "yes", "send it")
+  if (userId) {
+    const confirmResult = await handleConfirmation(message, context, userId);
+    if (confirmResult) {
+      return confirmResult;
+    }
+  }
+
+  // Check for multi-step workflow
   if (userId) {
     const workflowResult = await detectAndExecuteWorkflow(message, schedule, preferences, userId, userName);
     if (workflowResult) {

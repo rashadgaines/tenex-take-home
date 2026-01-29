@@ -76,9 +76,18 @@ export interface ChatContext {
   conversationHistory?: ChatMessage[];
 }
 
+export interface ExecutedAction {
+  id: string;
+  type: 'schedule' | 'email' | 'update' | 'analyze';
+  label: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  detail?: string;
+}
+
 export interface ChatResponse {
   message: ChatMessage;
   suggestedActions?: ActionButton[];
+  executedActions?: ExecutedAction[];
 }
 
 export interface AnalyticsRequest {

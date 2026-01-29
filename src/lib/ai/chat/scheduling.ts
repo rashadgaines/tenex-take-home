@@ -1,7 +1,7 @@
 /**
  * Scheduling logic for meeting creation
  */
-import { ChatResponse, ChatMessage } from '@/types/ai';
+import { ChatResponse, ChatMessage, ExecutedAction } from '@/types/ai';
 import { DaySchedule } from '@/types/calendar';
 import { UserPreferences } from '@/types/user';
 import { createDateFromStrings, isInPast } from '../../date-utils';
@@ -22,21 +22,42 @@ export async function detectAndHandleSchedulingRequest(
 ): Promise<ChatResponse | null> {
   const lowerMessage = message.toLowerCase();
 
-  // Check for scheduling patterns (more comprehensive)
+  // Check for scheduling patterns (comprehensive)
   const schedulingPatterns = [
     /schedule.*meeting/i,
-    /set up.*meeting/i,
-    /create.*meeting/i,
-    /book.*meeting/i,
     /schedule.*call/i,
-    /set up.*call/i,
-    /add.*event/i,
-    /create.*event/i,
-    /block.*time/i,
+    /schedule.*sync/i,
+    /schedule.*standup/i,
+    /schedule.*catchup/i,
+    /schedule.*catch-up/i,
+    /schedule.*chat/i,
+    /schedule.*check-in/i,
+    /schedule.*checkin/i,
+    /schedule.*1[:\-]1/i,
+    /schedule.*one[:\-]on[:\-]one/i,
     /schedule.*appointment/i,
+    /schedule.*session/i,
+    /schedule.*interview/i,
+    /schedule.*review/i,
+    /schedule.*demo/i,
+    /schedule.*presentation/i,
+    /schedule.*(15|30|45|60|90)\s*(min|minute)/i,
+    /set up.*meeting/i,
+    /set up.*call/i,
+    /set up.*sync/i,
+    /set up.*time/i,
+    /create.*meeting/i,
+    /create.*event/i,
+    /book.*meeting/i,
+    /book.*call/i,
+    /book.*time/i,
     /book.*appointment/i,
+    /add.*event/i,
+    /add.*meeting/i,
+    /block.*time/i,
     /plan.*meeting/i,
     /organize.*meeting/i,
+    /\b(meeting|sync|call)\s+with\s+\S+@\S+/i,  // "meeting with email@domain.com"
   ];
 
   const isSchedulingRequest = schedulingPatterns.some(pattern => pattern.test(lowerMessage));
@@ -148,31 +169,49 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       tomorrow
     );
 
-    // Build response message
+    // Build response message with action steps
     let responseContent: string;
+    const actionSteps: string[] = [];
+
     if (results.created.length === 0) {
       throw new Error('Failed to create any meetings');
     } else if (results.created.length === 1) {
       const meeting = results.created[0];
-      responseContent = `I've scheduled "${meeting.title}" for ${meeting.start.toLocaleDateString('en-US', { timeZone: userTimezone })} at ${meeting.start.toLocaleTimeString('en-US', {
+      const timeStr = meeting.start.toLocaleTimeString('en-US', {
         hour: 'numeric',
         minute: '2-digit',
         hour12: true,
         timeZone: userTimezone
-      })} - ${meeting.end.toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
+      });
+      const dateStr = meeting.start.toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
         timeZone: userTimezone
-      })}.${meeting.attendees.length > 0 ? ` Invitations sent to ${meeting.attendees.length} attendee(s).` : ''}`;
+      });
+
+      // Build action steps for CLI-like feedback
+      actionSteps.push(`✓ Created calendar event`);
+      if (meeting.attendees.length > 0) {
+        actionSteps.push(`✓ Sent invitation to ${meeting.attendees.join(', ')}`);
+      }
+
+      const stepsDisplay = actionSteps.map(s => `  ${s}`).join('\n');
+      responseContent = `${stepsDisplay}\n\n**${meeting.title}** scheduled for ${dateStr} at ${timeStr}.`;
     } else {
-      const meetingList = results.created.map(m =>
-        `- "${m.title}" on ${m.start.toLocaleDateString('en-US', { timeZone: userTimezone, weekday: 'short', month: 'short', day: 'numeric' })} at ${m.start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: userTimezone })}`
-      ).join('\n');
-      responseContent = `I've scheduled ${results.created.length} meetings:\n\n${meetingList}`;
+      // Multiple meetings
+      for (const meeting of results.created) {
+        actionSteps.push(`✓ Created "${meeting.title}"`);
+        if (meeting.attendees.length > 0) {
+          actionSteps.push(`  └ Sent invitation to ${meeting.attendees.join(', ')}`);
+        }
+      }
+
+      const stepsDisplay = actionSteps.map(s => `  ${s}`).join('\n');
+      responseContent = `${stepsDisplay}\n\n**${results.created.length} meetings scheduled.**`;
 
       if (results.failed.length > 0) {
-        responseContent += `\n\nFailed to schedule ${results.failed.length} meeting(s): ${results.failed.map(f => f.title).join(', ')}`;
+        responseContent += `\n\n⚠ Failed to schedule: ${results.failed.map(f => f.title).join(', ')}`;
       }
     }
 
@@ -183,9 +222,30 @@ Working hours: ${preferences.workingHours.start} - ${preferences.workingHours.en
       timestamp: new Date(),
     };
 
+    // Build executed actions for UI feedback
+    const executedActions: ExecutedAction[] = results.created.map((meeting, i) => ({
+      id: `action-schedule-${i}`,
+      type: 'schedule' as const,
+      label: `Created "${meeting.title}"`,
+      status: 'completed' as const,
+      detail: meeting.attendees.length > 0 ? `Invitation sent to ${meeting.attendees.join(', ')}` : undefined,
+    }));
+
+    // Add failed actions
+    for (const failed of results.failed) {
+      executedActions.push({
+        id: `action-schedule-failed-${failed.title}`,
+        type: 'schedule' as const,
+        label: `Failed: ${failed.title}`,
+        status: 'failed' as const,
+        detail: failed.error,
+      });
+    }
+
     return {
       message: responseMessage,
       suggestedActions: [],
+      executedActions,
     };
 
   } catch (error) {

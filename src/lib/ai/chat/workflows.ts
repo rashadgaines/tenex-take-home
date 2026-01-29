@@ -298,10 +298,18 @@ export async function executeWorkflow(
     : 'failed';
   workflow.summary = results.join('\n');
 
+  // Build action steps display
+  const actionSteps: string[] = [];
+  for (const step of workflow.steps) {
+    const icon = step.status === 'completed' ? '✓' : step.status === 'failed' ? '✗' : '○';
+    actionSteps.push(`  ${icon} ${step.description}`);
+  }
+  const stepsDisplay = actionSteps.join('\n');
+
   const responseMessage: ChatMessage = {
     id: generateId(),
     role: 'assistant',
-    content: `I've completed your request:\n\n${results.join('\n\n')}\n\nLet me know if you need anything else!`,
+    content: `${stepsDisplay}\n\n**Done!** Let me know if you need anything else.`,
     timestamp: new Date(),
   };
 
