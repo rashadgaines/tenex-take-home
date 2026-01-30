@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle, KeyboardEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface ChatInputProps {
@@ -14,14 +14,20 @@ const MAX_CHAR_WARNING = 500;
 const MAX_LINES = 4;
 const LINE_HEIGHT = 24; // approximate line height in pixels
 
-export function ChatInput({
-  onSend,
-  isLoading = false,
-  placeholder = 'Ask me anything about your schedule...',
-  disabled = false,
-}: ChatInputProps) {
+import React, { forwardRef, useImperativeHandle } from 'react';
+
+export const ChatInput = forwardRef(function ChatInput(
+  { onSend, isLoading = false, placeholder = 'Ask me anything about your schedule...', disabled = false }: ChatInputProps,
+  ref: React.Ref<{ focus: () => void } | null>
+) {
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      textareaRef.current?.focus();
+    },
+  }));
 
   // Auto-resize textarea
   useEffect(() => {
@@ -185,4 +191,4 @@ export function ChatInput({
       </div>
     </div>
   );
-}
+});

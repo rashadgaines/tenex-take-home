@@ -129,8 +129,9 @@ export function buildEmailDraftPrompt(params: {
   suggestedTimes?: string[];
   tone?: 'formal' | 'casual' | 'neutral';
   specificContent?: string;
+  enhance?: boolean;
 }): string {
-  const { userName, recipient, recipientName, purpose, suggestedTimes, tone = 'neutral', specificContent } = params;
+  const { userName, recipient, recipientName, purpose, suggestedTimes, tone = 'neutral', specificContent, enhance = false } = params;
 
   const timesSection = suggestedTimes?.length
     ? `\nSuggested times to offer:\n${suggestedTimes.map((t) => `- ${t}`).join('\n')}`
@@ -143,19 +144,34 @@ export function buildEmailDraftPrompt(params: {
   };
 
   const contentSection = specificContent
-    ? `\nSPECIFIC CONTENT FROM USER (YOU MUST USE THIS): ${specificContent}`
+    ? `\nSPECIFIC CONTENT FROM USER: ${specificContent}`
     : `\nPurpose: ${purpose}`;
 
-  return `Draft a brief, professional email for ${userName} to send to ${recipientName || recipient}.
+  if (!enhance) {
+    return `Draft a MINIMALIST email for ${userName} to send to ${recipientName || recipient}.
 ${contentSection}${timesSection}
 
-Guidelines:
-- Keep it short (3-5 sentences max)
-- Sound natural, not templated
+Guidelines for MINIMALIST mode:
+- CRITICAL: Use ONLY the specific content or purpose provided. Do NOT add extra sentences, context, or fluff.
+- If the user said "Tell Alice I'm late", the body should be exactly "I'm running a bit late" or similar, nothing more.
+- Do NOT add helpful suggestions or extra facts.
+- Keep it to 1-2 sentences max.
+- Use a simple greeting and sign-off if missing, but keep the core message exactly as requested.
 - ${toneGuidance[tone]}
-- End with a clear ask or next step
-- Don't use overly formal language like "I hope this email finds you well"
-- CRITICAL: If SPECIFIC CONTENT is provided above, use it as the core message. Do not hallucinate or add significant new information or facts. If only a purpose is provided, expand it logically and professionally.
+
+Return only the email body text, no subject line or greeting/signature formatting.`;
+  }
+
+  return `Draft a polished, professional email for ${userName} to send to ${recipientName || recipient}.
+${contentSection}${timesSection}
+
+Guidelines for ENHANCED mode:
+- Expand the core message logically and professionally.
+- Sound natural and helpful.
+- Keep it short (3-5 sentences max).
+- ${toneGuidance[tone]}
+- End with a clear ask or next step.
+- Don't use overly formal language like "I hope this email finds you well".
 
 Return only the email body text, no subject line or greeting/signature formatting.`;
 }

@@ -336,15 +336,15 @@ export function ChatMessage({
                   <motion.button
                     key={idx}
                     onClick={() => handleActionClick(action)}
-                    disabled={!!loadingAction}
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
+                    disabled={!!loadingAction || action.disabled}
+                    whileHover={!(loadingAction || action.disabled) ? { scale: 1.02 } : undefined}
+                    whileTap={!(loadingAction || action.disabled) ? { scale: 0.98 } : undefined}
                     className={`
                       px-4 py-2 text-sm font-medium rounded-xl border transition-all flex items-center gap-2
                       ${isPrimary
                         ? 'bg-[var(--accent-primary)] text-[var(--bg-primary)] border-[var(--accent-primary)] hover:bg-[var(--accent-hover)]'
                         : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] border-[var(--border-light)] hover:border-[var(--border-medium)] hover:bg-[var(--bg-elevated)]'}
-                      ${loadingAction ? 'opacity-70 cursor-not-allowed' : ''}
+                      ${(loadingAction || action.disabled) ? 'opacity-50 cursor-not-allowed grayscale-[0.5]' : ''}
                     `}
                   >
                     {isLoading && (

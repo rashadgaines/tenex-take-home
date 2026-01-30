@@ -121,15 +121,25 @@ function PlanPageContent() {
     }
   }, [searchParams, router]);
 
+  const chatInputRef = useRef<{ focus?: () => void } | null>(null);
+
   const handleAction = async (action: ActionButton) => {
     if (action.action === 'open_chat' && (action.payload as any)?.message) {
       await handleSend((action.payload as any).message);
     } else if (action.action === 'edit' && (action.payload as any)?.draft) {
-      const draft = (action.payload as any).draft;
-      // For editing, we just pre-fill a prompt, but handleSend will trigger the AI to "think" about the edit
-      await handleSend(`I want to edit the email draft to ${draft.to || 'the recipient'}. Here is the current body: ${draft.body}`);
+      // Simulate assistant asking for details
+      const assistantMessage: ChatMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `What specific changes would you like me to make to the draft?`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+
+      // Focus the chat input so user can immediately reply
+      // Slight delay allows the UI to render the new assistant message first
+      setTimeout(() => chatInputRef.current?.focus?.(), 50);
     } else if (action.action === 'send_email' || action.label.toLowerCase().includes('send')) {
-      // This is usually handled by 'open_chat' with 'send it' but we can be explicit
       await handleSend('send it');
     }
   };
@@ -356,6 +366,7 @@ function PlanPageContent() {
       <div className="fixed bottom-6 left-0 right-0 z-40 pointer-events-none">
         <div className="pointer-events-auto">
           <ChatInput
+            ref={chatInputRef}
             onSend={handleSend}
             isLoading={isLoading}
             placeholder="What would you like to schedule?"

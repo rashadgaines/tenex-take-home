@@ -63,6 +63,7 @@ export interface ActionButton {
   label: string;
   action: 'suggest_times' | 'decline' | 'send_email' | 'edit' | 'dismiss' | 'open_chat' | 'schedule_event';
   payload?: unknown;
+  disabled?: boolean;
 }
 
 // API Request/Response types
@@ -102,7 +103,11 @@ export interface DraftEmailRequest {
   purpose: string;
   suggestedTimes?: TimeSlot[];
   tone?: 'formal' | 'casual' | 'neutral';
-}
+  // Optional: direct user-provided content to use as the body (for edits/enhancements)
+  specificContent?: string;
+  // If true, generate an enhanced/polished draft; otherwise generate a minimalist draft
+  enhance?: boolean;
+} 
 
 export interface DraftEmailResponse {
   draft: EmailDraft;
@@ -142,7 +147,10 @@ export interface BatchDraftEmailRequest {
   purpose: string;
   suggestedTimes?: TimeSlot[];
   tone?: 'formal' | 'casual' | 'neutral';
-}
+  // Optional: if provided, use this content for all drafts or to indicate enhancement
+  specificContent?: string;
+  enhance?: boolean;
+} 
 
 export interface BatchDraftEmailResponse {
   drafts: Array<{

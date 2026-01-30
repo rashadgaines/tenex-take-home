@@ -64,6 +64,8 @@ export async function POST(request: NextRequest) {
       purpose: body.purpose,
       suggestedTimes,
       tone: body.tone,
+      specificContent: (body as any).specificContent,
+      enhance: (body as any).enhance ?? false,
     });
 
     // Generate subject line

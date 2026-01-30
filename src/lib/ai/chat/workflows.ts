@@ -338,7 +338,13 @@ ${firstDraft.body}
     suggestedActions.push({
       label: 'Send now',
       action: 'open_chat',
-      payload: { message: 'send it' }
+      payload: { message: 'send it' },
+      disabled: !(workflow.steps.find(s => s.type === 'email')?.result as any)?.drafts?.[0]?.email
+    });
+    suggestedActions.push({
+      label: 'Enhance with AI',
+      action: 'open_chat',
+      payload: { message: 'enhance draft' }
     });
     const emailStep = workflow.steps.find(s => s.type === 'email');
     if ((emailStep?.result as any)?.drafts?.[0]) {

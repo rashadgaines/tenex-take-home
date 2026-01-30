@@ -73,7 +73,7 @@ export async function processChat(
 
   // Check if this is an email request
   if (userId) {
-    const emailResult = await detectAndHandleEmailRequest(message, userId, userName);
+    const emailResult = await detectAndHandleEmailRequest(message, userId, userName, context?.conversationHistory);
     if (emailResult) {
       return emailResult;
     }

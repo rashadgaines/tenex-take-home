@@ -67,7 +67,7 @@ function extractEmailFromMessage(
   if (!to) return null;
 
   // Try to extract subject
-  const subjectMatch = content.match(/subject:\s*([^\n]+)/i);
+  const subjectMatch = content.match(/(?:subject|topic):\s*([^\n]+)/i) || content.match(/\*\*Subject:\*\*\s*([^\n]+)/i);
   const subject = subjectMatch?.[1]?.trim() || 'Meeting Request';
 
   // Try to extract body - look for content between "---" markers or after "Hi"
