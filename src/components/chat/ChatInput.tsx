@@ -14,11 +14,9 @@ const MAX_CHAR_WARNING = 500;
 const MAX_LINES = 4;
 const LINE_HEIGHT = 24; // approximate line height in pixels
 
-import React, { forwardRef, useImperativeHandle } from 'react';
-
 export const ChatInput = forwardRef(function ChatInput(
   { onSend, isLoading = false, placeholder = 'Ask me anything about your schedule...', disabled = false }: ChatInputProps,
-  ref: React.Ref<{ focus: () => void } | null>
+  ref: React.Ref<{ focus?: () => void } | null>
 ) {
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
